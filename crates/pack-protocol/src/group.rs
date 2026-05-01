@@ -1,0 +1,452 @@
+// Implements: Sender Keys for group messaging
+// Source: Public Sender Keys documentation
+//
+// Each group member maintains their own sender key chain. When a member wants to
+// send to the group, they first distribute a SenderKeyDistributionMessage to all
+// members via 1:1 encrypted sessions. Then they can encrypt to the group using
+// their sender key chain, which ratchets forward with each message.
+
+use std::collections::HashMap;
+
+use crate::chain::{ChainKey, MessageKey, kdf_ck};
+use crate::crypto::aead;
+use crate::crypto::curve::{self, KeyPair, PublicKey};
+use crate::crypto::hmac;
+use crate::errors::{Result, PackError};
+
+const MAX_SENDER_KEY_STATES: usize = 5;
+const MAX_MESSAGE_KEYS: usize = 2000;
+
+/// A sender key distribution message sent to group members to establish
+/// or update the sender's key chain. Distributed via 1:1 encrypted sessions.
+pub struct SenderKeyDistributionMessage {
+    pub distribution_id: String,
+    pub chain_id: u32,
+    pub iteration: u32,
+    pub chain_key: [u8; 32],
+    pub signing_key: PublicKey,
+}
+
+impl SenderKeyDistributionMessage {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let dist_bytes = self.distribution_id.as_bytes();
+        let mut buf = Vec::with_capacity(4 + dist_bytes.len() + 4 + 4 + 32 + 32);
+        buf.extend_from_slice(&(dist_bytes.len() as u32).to_be_bytes());
+        buf.extend_from_slice(dist_bytes);
+        buf.extend_from_slice(&self.chain_id.to_be_bytes());
+        buf.extend_from_slice(&self.iteration.to_be_bytes());
+        buf.extend_from_slice(&self.chain_key);
+        buf.extend_from_slice(self.signing_key.as_bytes());
+        buf
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() < 4 {
+            return Err(PackError::InvalidMessage("sender key dist message too short".into()));
+        }
+        let dist_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let offset = 4 + dist_len;
+        if data.len() < offset + 4 + 4 + 32 + 32 {
+            return Err(PackError::InvalidMessage("sender key dist message too short".into()));
+        }
+        let distribution_id = String::from_utf8(data[4..offset].to_vec())
+            .map_err(|_| PackError::InvalidMessage("invalid utf8 in distribution id".into()))?;
+        let chain_id = u32::from_be_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]);
+        let iteration = u32::from_be_bytes([data[offset+4], data[offset+5], data[offset+6], data[offset+7]]);
+        let mut chain_key = [0u8; 32];
+        chain_key.copy_from_slice(&data[offset+8..offset+40]);
+        let mut signing_bytes = [0u8; 32];
+        signing_bytes.copy_from_slice(&data[offset+40..offset+72]);
+        let signing_key = PublicKey::from_bytes_validated(signing_bytes)?;
+        Ok(Self { distribution_id, chain_id, iteration, chain_key, signing_key })
+    }
+}
+
+/// A single sender key chain state.
+pub struct SenderKeyState {
+    pub chain_id: u32,
+    pub iteration: u32,
+    pub chain_key: ChainKey,
+    pub signing_key: PublicKey,
+    pub signing_private: Option<crate::crypto::curve::PrivateKey>,
+    skipped_keys: HashMap<u32, MessageKey>,
+}
+
+/// Stored sender key record for a group member. May hold multiple states
+/// to handle re-keying transitions.
+pub struct SenderKeyRecord {
+    pub states: Vec<SenderKeyState>,
+}
+
+impl SenderKeyRecord {
+    pub fn new() -> Self {
+        Self { states: Vec::new() }
+    }
+
+    pub fn add_state(&mut self, state: SenderKeyState) {
+        self.states.insert(0, state);
+        self.states.truncate(MAX_SENDER_KEY_STATES);
+    }
+
+    fn state_for_chain_id(&self, chain_id: u32) -> Option<usize> {
+        self.states.iter().position(|s| s.chain_id == chain_id)
+    }
+}
+
+/// Create a new sender key distribution message for a group.
+/// The caller is the sender establishing their chain for this group.
+pub fn create_sender_key_distribution_message(
+    distribution_id: &str,
+    record: &mut SenderKeyRecord,
+) -> Result<SenderKeyDistributionMessage> {
+    let signing_pair = KeyPair::generate();
+    let chain_key_bytes: [u8; 32] = rand::random();
+    let chain_id: u32 = rand::random();
+
+    let state = SenderKeyState {
+        chain_id,
+        iteration: 0,
+        chain_key: ChainKey::from_bytes(chain_key_bytes),
+        signing_key: signing_pair.public.clone(),
+        signing_private: Some(signing_pair.private.clone()),
+        skipped_keys: HashMap::new(),
+    };
+
+    record.add_state(state);
+
+    Ok(SenderKeyDistributionMessage {
+        distribution_id: distribution_id.to_string(),
+        chain_id,
+        iteration: 0,
+        chain_key: chain_key_bytes,
+        signing_key: signing_pair.public.clone(),
+    })
+}
+
+/// Process a received sender key distribution message.
+/// Stores the sender's chain so we can decrypt their future group messages.
+pub fn process_sender_key_distribution_message(
+    record: &mut SenderKeyRecord,
+    message: &SenderKeyDistributionMessage,
+) {
+    let state = SenderKeyState {
+        chain_id: message.chain_id,
+        iteration: message.iteration,
+        chain_key: ChainKey::from_bytes(message.chain_key),
+        signing_key: message.signing_key.clone(),
+        signing_private: None,
+        skipped_keys: HashMap::new(),
+    };
+    record.add_state(state);
+}
+
+/// Encrypted group message format.
+pub struct SenderKeyMessage {
+    pub chain_id: u32,
+    pub iteration: u32,
+    pub ciphertext: Vec<u8>,
+    pub signature: [u8; 64],
+}
+
+impl SenderKeyMessage {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(4 + 4 + 4 + self.ciphertext.len() + 64);
+        buf.extend_from_slice(&self.chain_id.to_be_bytes());
+        buf.extend_from_slice(&self.iteration.to_be_bytes());
+        buf.extend_from_slice(&(self.ciphertext.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&self.ciphertext);
+        buf.extend_from_slice(&self.signature);
+        buf
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() < 12 + 64 {
+            return Err(PackError::InvalidMessage("sender key message too short".into()));
+        }
+        let chain_id = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        let iteration = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        let ct_len = u32::from_be_bytes([data[8], data[9], data[10], data[11]]) as usize;
+        if data.len() < 12 + ct_len + 64 {
+            return Err(PackError::InvalidMessage("sender key message too short".into()));
+        }
+        let ciphertext = data[12..12+ct_len].to_vec();
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&data[12+ct_len..12+ct_len+64]);
+        Ok(Self { chain_id, iteration, ciphertext, signature })
+    }
+}
+
+/// Encrypt a message using the sender's key chain for a group.
+pub fn group_encrypt(
+    record: &mut SenderKeyRecord,
+    plaintext: &[u8],
+) -> Result<SenderKeyMessage> {
+    let state = record.states.first_mut()
+        .ok_or(PackError::InvalidMessage("no sender key state".into()))?;
+
+    let signing_private = state.signing_private.as_ref()
+        .ok_or(PackError::InvalidMessage("not the sender for this chain".into()))?;
+
+    // Derive message key from chain key
+    let (new_chain_key, message_key) = kdf_ck(&state.chain_key);
+    let iteration = state.iteration;
+
+    // Derive nonce from message key + iteration
+    let nonce = derive_group_nonce(message_key.as_bytes(), iteration);
+
+    // Encrypt
+    let ciphertext = aead::encrypt(message_key.as_bytes(), &nonce, plaintext, &[])?;
+
+    // Update chain state
+    state.chain_key = new_chain_key;
+    state.iteration += 1;
+
+    // Sign the message content (chain_id || iteration || ciphertext)
+    let mut sign_data = Vec::new();
+    sign_data.extend_from_slice(&state.chain_id.to_be_bytes());
+    sign_data.extend_from_slice(&iteration.to_be_bytes());
+    sign_data.extend_from_slice(&ciphertext);
+    let signature = curve::xeddsa_sign(signing_private, &sign_data);
+
+    Ok(SenderKeyMessage {
+        chain_id: state.chain_id,
+        iteration,
+        ciphertext,
+        signature,
+    })
+}
+
+/// Decrypt a group message using the stored sender key for the sender.
+pub fn group_decrypt(
+    record: &mut SenderKeyRecord,
+    message: &SenderKeyMessage,
+) -> Result<Vec<u8>> {
+    let state_idx = record.state_for_chain_id(message.chain_id)
+        .ok_or(PackError::InvalidMessage("unknown sender key chain".into()))?;
+
+    let state = &record.states[state_idx];
+
+    // Verify signature
+    let mut sign_data = Vec::new();
+    sign_data.extend_from_slice(&message.chain_id.to_be_bytes());
+    sign_data.extend_from_slice(&message.iteration.to_be_bytes());
+    sign_data.extend_from_slice(&message.ciphertext);
+    curve::xeddsa_verify(&state.signing_key, &sign_data, &message.signature)?;
+
+    // Check skipped keys cache first (for out-of-order messages)
+    let state = &mut record.states[state_idx];
+
+    if message.iteration < state.iteration {
+        if let Some(mk) = state.skipped_keys.remove(&message.iteration) {
+            let nonce = derive_group_nonce(mk.as_bytes(), message.iteration);
+            return aead::decrypt(mk.as_bytes(), &nonce, &message.ciphertext, &[]);
+        }
+        return Err(PackError::DuplicateMessage);
+    }
+
+    let skip_count = message.iteration - state.iteration;
+    if skip_count > MAX_MESSAGE_KEYS as u32 {
+        return Err(PackError::TooManySkippedMessages);
+    }
+
+    // Ratchet forward, caching skipped message keys
+    let mut current_chain = ChainKey::from_bytes(*state.chain_key.as_bytes());
+    let mut target_mk: Option<MessageKey> = None;
+
+    for i in 0..=skip_count {
+        let (next_chain, mk) = kdf_ck(&current_chain);
+        if i == skip_count {
+            target_mk = Some(mk);
+        } else {
+            let skipped_iteration = state.iteration + i;
+            state.skipped_keys.insert(skipped_iteration, mk);
+            // Evict oldest if over limit
+            if state.skipped_keys.len() > MAX_MESSAGE_KEYS {
+                let oldest = *state.skipped_keys.keys().min().unwrap();
+                state.skipped_keys.remove(&oldest);
+            }
+        }
+        current_chain = next_chain;
+    }
+
+    let message_key = target_mk.unwrap();
+    let nonce = derive_group_nonce(message_key.as_bytes(), message.iteration);
+
+    let plaintext = aead::decrypt(message_key.as_bytes(), &nonce, &message.ciphertext, &[])?;
+
+    // Update state to reflect the advancement
+    state.chain_key = current_chain;
+    state.iteration = message.iteration + 1;
+
+    Ok(plaintext)
+}
+
+fn derive_group_nonce(mk: &[u8; 32], iteration: u32) -> [u8; 12] {
+    let iter_bytes = iteration.to_be_bytes();
+    let hash = hmac::hmac_sha256(mk, &iter_bytes);
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&hash[..12]);
+    nonce
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sender_key_distribution_roundtrip() {
+        let mut record = SenderKeyRecord::new();
+        let msg = create_sender_key_distribution_message("group-1", &mut record).unwrap();
+
+        let bytes = msg.to_bytes();
+        let parsed = SenderKeyDistributionMessage::from_bytes(&bytes).unwrap();
+
+        assert_eq!(parsed.distribution_id, "group-1");
+        assert_eq!(parsed.chain_id, msg.chain_id);
+        assert_eq!(parsed.iteration, 0);
+        assert_eq!(parsed.chain_key, msg.chain_key);
+    }
+
+    #[test]
+    fn test_sender_key_message_roundtrip() {
+        let msg = SenderKeyMessage {
+            chain_id: 42,
+            iteration: 7,
+            ciphertext: vec![1, 2, 3, 4, 5],
+            signature: [0xAB; 64],
+        };
+        let bytes = msg.to_bytes();
+        let parsed = SenderKeyMessage::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.chain_id, 42);
+        assert_eq!(parsed.iteration, 7);
+        assert_eq!(parsed.ciphertext, vec![1, 2, 3, 4, 5]);
+        assert_eq!(parsed.signature, [0xAB; 64]);
+    }
+
+    #[test]
+    fn test_group_encrypt_decrypt_roundtrip() {
+        let mut sender_record = SenderKeyRecord::new();
+        let dist_msg = create_sender_key_distribution_message("group-1", &mut sender_record).unwrap();
+
+        // Receiver processes the distribution message
+        let mut receiver_record = SenderKeyRecord::new();
+        process_sender_key_distribution_message(&mut receiver_record, &dist_msg);
+
+        // Sender encrypts
+        let plaintext = b"hello group!";
+        let encrypted = group_encrypt(&mut sender_record, plaintext).unwrap();
+
+        // Receiver decrypts
+        let decrypted = group_decrypt(&mut receiver_record, &encrypted).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_group_multiple_messages() {
+        let mut sender_record = SenderKeyRecord::new();
+        let dist_msg = create_sender_key_distribution_message("group-1", &mut sender_record).unwrap();
+
+        let mut receiver_record = SenderKeyRecord::new();
+        process_sender_key_distribution_message(&mut receiver_record, &dist_msg);
+
+        for i in 0..10 {
+            let msg = format!("message {}", i);
+            let encrypted = group_encrypt(&mut sender_record, msg.as_bytes()).unwrap();
+            let decrypted = group_decrypt(&mut receiver_record, &encrypted).unwrap();
+            assert_eq!(decrypted, msg.as_bytes());
+        }
+    }
+
+    #[test]
+    fn test_group_out_of_order() {
+        let mut sender_record = SenderKeyRecord::new();
+        let dist_msg = create_sender_key_distribution_message("group-1", &mut sender_record).unwrap();
+
+        let mut receiver_record = SenderKeyRecord::new();
+        process_sender_key_distribution_message(&mut receiver_record, &dist_msg);
+
+        // Send 3 messages
+        let e1 = group_encrypt(&mut sender_record, b"msg1").unwrap();
+        let e2 = group_encrypt(&mut sender_record, b"msg2").unwrap();
+        let e3 = group_encrypt(&mut sender_record, b"msg3").unwrap();
+
+        // Receive out of order: 3, 1, 2
+        // Message 3 first — skips forward, caching keys for 1 and 2
+        let d3 = group_decrypt(&mut receiver_record, &e3).unwrap();
+        assert_eq!(d3, b"msg3");
+
+        // Messages 1 and 2 decrypted from the skipped key cache
+        let d1 = group_decrypt(&mut receiver_record, &e1).unwrap();
+        assert_eq!(d1, b"msg1");
+        let d2 = group_decrypt(&mut receiver_record, &e2).unwrap();
+        assert_eq!(d2, b"msg2");
+
+        // Replaying message 1 again should fail (key consumed)
+        assert!(group_decrypt(&mut receiver_record, &e1).is_err());
+    }
+
+    #[test]
+    fn test_group_wrong_chain_fails() {
+        let mut sender_record = SenderKeyRecord::new();
+        let _dist_msg = create_sender_key_distribution_message("group-1", &mut sender_record).unwrap();
+
+        let encrypted = group_encrypt(&mut sender_record, b"secret").unwrap();
+
+        // Receiver has no sender key for this chain
+        let mut empty_record = SenderKeyRecord::new();
+        assert!(group_decrypt(&mut empty_record, &encrypted).is_err());
+    }
+
+    #[test]
+    fn test_group_tampered_ciphertext_fails() {
+        let mut sender_record = SenderKeyRecord::new();
+        let dist_msg = create_sender_key_distribution_message("group-1", &mut sender_record).unwrap();
+
+        let mut receiver_record = SenderKeyRecord::new();
+        process_sender_key_distribution_message(&mut receiver_record, &dist_msg);
+
+        let mut encrypted = group_encrypt(&mut sender_record, b"hello").unwrap();
+        // Tamper with ciphertext — signature verification should fail
+        if !encrypted.ciphertext.is_empty() {
+            encrypted.ciphertext[0] ^= 0xFF;
+        }
+        assert!(group_decrypt(&mut receiver_record, &encrypted).is_err());
+    }
+
+    #[test]
+    fn test_group_multiple_receivers() {
+        let mut sender_record = SenderKeyRecord::new();
+        let dist_msg = create_sender_key_distribution_message("group-1", &mut sender_record).unwrap();
+
+        let mut receiver1 = SenderKeyRecord::new();
+        let mut receiver2 = SenderKeyRecord::new();
+        process_sender_key_distribution_message(&mut receiver1, &dist_msg);
+        process_sender_key_distribution_message(&mut receiver2, &dist_msg);
+
+        let encrypted = group_encrypt(&mut sender_record, b"to all").unwrap();
+
+        let d1 = group_decrypt(&mut receiver1, &encrypted).unwrap();
+        let d2 = group_decrypt(&mut receiver2, &encrypted).unwrap();
+        assert_eq!(d1, b"to all");
+        assert_eq!(d2, b"to all");
+    }
+
+    #[test]
+    fn test_group_chain_ratchet_advances() {
+        let mut sender_record = SenderKeyRecord::new();
+        let dist_msg = create_sender_key_distribution_message("group-1", &mut sender_record).unwrap();
+
+        let initial_chain = *sender_record.states[0].chain_key.as_bytes();
+
+        let _e1 = group_encrypt(&mut sender_record, b"msg1").unwrap();
+        let after_one = *sender_record.states[0].chain_key.as_bytes();
+        assert_ne!(initial_chain, after_one);
+
+        let _e2 = group_encrypt(&mut sender_record, b"msg2").unwrap();
+        let after_two = *sender_record.states[0].chain_key.as_bytes();
+        assert_ne!(after_one, after_two);
+
+        assert_eq!(sender_record.states[0].iteration, 2);
+        let _ = dist_msg; // used above
+    }
+}

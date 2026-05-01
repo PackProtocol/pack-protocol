@@ -1,0 +1,4 @@
+module CPackProtocolFFI {
+    header "pack_protocol.h"
+    export *
+}

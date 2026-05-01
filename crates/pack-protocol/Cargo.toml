@@ -1,0 +1,31 @@
+[package]
+name = "pack-protocol"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+x25519-dalek = { workspace = true }
+ed25519-dalek = { workspace = true }
+curve25519-dalek = { workspace = true }
+aes-gcm = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+rand_core = { workspace = true }
+zeroize = { workspace = true }
+prost = { workspace = true }
+thiserror = { workspace = true }
+subtle = { workspace = true }
+async-trait = { workspace = true }
+ml-kem = { workspace = true }
+
+[build-dependencies]
+prost-build = "0.13"
+protox = "0.7"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+tokio = { version = "1", features = ["rt", "macros"] }

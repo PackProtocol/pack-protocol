@@ -1,0 +1,32 @@
+[package]
+name = "pack-protocol-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+pack-protocol = { path = "../crates/pack-protocol" }
+
+[[bin]]
+name = "fuzz_message_deserialize"
+path = "fuzz_targets/fuzz_message_deserialize.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_ratchet_decrypt"
+path = "fuzz_targets/fuzz_ratchet_decrypt.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_sealed_sender_decrypt"
+path = "fuzz_targets/fuzz_sealed_sender_decrypt.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_sender_key_message"
+path = "fuzz_targets/fuzz_sender_key_message.rs"
+doc = false

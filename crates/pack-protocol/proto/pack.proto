@@ -1,0 +1,96 @@
+// Pack Protocol wire format definitions
+// Source: Derived from public protocol specifications
+//
+// These message types define the binary encoding of protocol messages
+// as described in the X3DH and Double Ratchet specifications.
+
+syntax = "proto3";
+
+package pack;
+
+// Wire format for the Double Ratchet message header.
+// Contains the sender's current ratchet public key, the previous chain
+// message count, and the current message number.
+// Spec reference: Double Ratchet §3.1
+message MessageHeader {
+    bytes ratchet_key = 1;       // 32 bytes: sender's current DH ratchet public key
+    uint32 previous_counter = 2; // Number of messages in previous sending chain (PN)
+    uint32 counter = 3;          // Message number in current sending chain (N)
+}
+
+// A regular encrypted message sent within an established session.
+// Contains the header and AEAD-encrypted ciphertext.
+// Spec reference: Double Ratchet §3.3
+message PackMessage {
+    bytes ratchet_key = 1;       // 32 bytes: sender's current DH ratchet public key
+    uint32 counter = 2;          // Message number
+    uint32 previous_counter = 3; // Previous chain length
+    bytes ciphertext = 4;        // AEAD-encrypted plaintext
+}
+
+// An initial message containing X3DH key exchange parameters.
+// Sent when establishing a new session.
+// Spec reference: X3DH §3.3
+message PreKeyPackMessage {
+    uint32 registration_id = 1;   // Sender's registration ID
+    uint32 signed_pre_key_id = 2; // ID of recipient's signed pre-key used
+    uint32 pre_key_id = 3;        // ID of recipient's one-time pre-key used (0 if none)
+    bytes base_key = 4;           // 32 bytes: sender's ephemeral public key
+    bytes identity_key = 5;       // 32 bytes: sender's identity public key
+    bytes message = 6;            // Serialized inner PackMessage
+}
+
+// Sender key distribution message for group messaging.
+// Distributed to group members via 1:1 encrypted sessions to establish
+// the sender's chain for group message encryption.
+// Spec reference: Sender Keys specification
+message SenderKeyDistributionMessage {
+    uint32 id = 1;                // Distribution/chain ID
+    uint32 iteration = 2;         // Current iteration of the chain
+    bytes chain_key = 3;          // 32 bytes: initial chain key
+    bytes signing_key = 4;        // 32 bytes: signing public key
+}
+
+// Encrypted group message using Sender Keys.
+// Spec reference: Sender Keys specification
+message SenderKeyMessage {
+    uint32 id = 1;                // Chain ID
+    uint32 iteration = 2;         // Iteration/message number
+    bytes ciphertext = 3;         // AEAD-encrypted plaintext
+}
+
+// Sender certificate for Sealed Sender.
+// Certifies the sender's identity, signed by the server.
+// Spec reference: Sealed Sender specification
+message SenderCertificate {
+    string sender_uuid = 1;       // Sender's UUID
+    uint32 sender_device_id = 2;  // Sender's device ID
+    bytes identity_key = 3;       // 32 bytes: sender's identity public key
+    uint64 expiration = 4;        // Certificate expiration timestamp
+    bytes signer = 5;             // Serialized ServerCertificate
+    bytes signature = 6;          // Server's signature over the certificate content
+}
+
+// Server certificate for Sealed Sender trust chain.
+// The trust root signs server certificates, which in turn sign sender certificates.
+// Spec reference: Sealed Sender specification
+message ServerCertificate {
+    uint32 id = 1;                // Server key ID
+    bytes key = 2;                // 32 bytes: server's signing public key
+}
+
+// Sealed sender envelope that hides the sender's identity from the server.
+// Uses ephemeral DH + AEAD to encrypt the sender certificate and inner message.
+// Spec reference: Sealed Sender specification
+message SealedSenderMessage {
+    uint32 version = 1;           // Envelope version
+    bytes ephemeral_public = 2;   // 32 bytes: ephemeral DH public key
+    bytes encrypted_content = 3;  // AEAD-encrypted (sender_cert || inner_message)
+}
+
+// Safety number fingerprint for identity verification.
+// Spec reference: Safety Number specification
+message FingerprintData {
+    bytes local_fingerprint = 1;  // 32 bytes: hash of local identity
+    bytes remote_fingerprint = 2; // 32 bytes: hash of remote identity
+}
