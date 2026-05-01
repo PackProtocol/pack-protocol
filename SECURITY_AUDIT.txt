@@ -1,0 +1,262 @@
+ Security Audit: pack-protocol                                                                                         
+                                                                                                                        
+  Architecture Summary                                                                                                  
+                                                                                                                        
+  Rust implementation of the Signal protocol stack: X25519/XEdDSA, AES-256-GCM, HKDF-SHA256, X3DH, PQXDH (ML-KEM-768),  
+  Double Ratchet, Sender Keys, Sealed Sender (Noise NK), Safety Numbers. FFI bindings for C/Swift/Kotlin/JNI. ~3,200    
+  lines of core crypto, ~600 lines FFI.                                                                                 
+                  
+  ---
+  Strengths (things done well)
+                                                                                                                        
+  - #![forbid(unsafe_code)] on the core library (lib.rs:1) — all unsafe is confined to the FFI crate
+  - Constant-time comparisons throughout via subtle::ConstantTimeEq — public key equality (curve.rs:41-45), HMAC        
+  verification (hmac.rs:18-22), fingerprint verification (fingerprint.rs:124-126)                                       
+  - ZeroizeOnDrop on PrivateKey, RootKey, ChainKey, MessageKey — key material is wiped when dropped                     
+  - DH zero-output check (curve.rs:120-124) — rejects small-subgroup attacks producing all-zero shared secrets          
+  - XEdDSA hedged nonces (curve.rs:161-174) — 64 random bytes mixed into nonce derivation, protecting against fault     
+  attacks per XEdDSA spec Section 2.1                                                                                   
+  - RFC test vectors for HMAC-SHA256 (RFC 4231) and HKDF-SHA256 (RFC 5869)                                              
+  - All-zeros public key rejection via from_bytes_validated in deserialization paths                                    
+  - Fuzz targets covering message deserialization, ratchet decrypt, sealed sender decrypt, and sender key messages      
+  - ML-KEM-768 for post-quantum forward secrecy (PQXDH)                                                                 
+  - Sealed sender identity binding — sender signs the Noise handshake hash, proving identity key ownership;             
+  forged-identity test verifies this (sealed_sender.rs:606-633)                                                         
+  - MAX_SKIP = 1000 per-chain bound on skipped message keys                                                             
+                                                                                                                        
+  ---             
+  HIGH Severity                                                                                                         
+                  
+  H1: Shared secrets not zeroized after use
+                                                                                                                        
+  Files: x3dh.rs:15-19, x3dh.rs:139-144, pqxdh.rs:7-11, pqxdh.rs:94-97                                                  
+                                                                                                                        
+  X3DHInitResult, X3DHRespondResult, PQXDHInitResult, and PQXDHRespondResult contain shared_secret: [u8; 32] as a plain 
+  array. These structs do not implement Zeroize or ZeroizeOnDrop. When the calling function (session.rs:285-291) uses
+  the shared secret and the result struct is dropped, the 32-byte shared secret persists on the stack/heap.             
+                  
+  The flow in create_session_and_encrypt:                                                                               
+  x3dh_result.shared_secret → ratchet_init_initiator(shared_secret: [u8; 32], ...)
+  The shared_secret parameter is passed by value (copied onto ratchet_init_initiator's stack frame). When               
+  ratchet_init_initiator returns, neither copy is zeroized.                                                             
+                                                                                                                        
+  Fix: Wrap shared_secret in Zeroizing<[u8; 32]> in all four result structs, and take Zeroizing<[u8; 32]> in            
+  ratchet_init_initiator / ratchet_init_responder.                                                                      
+                  
+  H2: No global bound on skipped message keys across ratchet epochs                                                     
+                  
+  File: ratchet.rs:73-74                                                                                                
+   
+  skipped_keys: HashMap<SkippedKeyId, MessageKey> accumulates entries from every ratchet epoch. MAX_SKIP (1000) only    
+  limits skipping within a single chain transition. Across N DH ratchet steps, the total can reach N * MAX_SKIP entries.
+                                                                                                                        
+  An attacker who controls when they respond can force rapid ratchet advances with high skip counts:                    
+  1. Send a message with ratchet key R1, message_number=999 → victim caches 999 keys
+  2. Send a message with ratchet key R2, message_number=999 → 999 more cached keys                                      
+  3. Repeat — each step adds up to 1000 entries, no eviction                      
+                                                                                                                        
+  At 68 bytes per entry (32 key bytes + 32 ratchet key + 4 message number), 100 ratchet advances × 1000 skips = ~6.8 MB.
+   On a mobile device with many sessions, this becomes a DoS vector.                                                    
+                                                                                                                        
+  Fix: Add a global cap (e.g., 5000 total skipped keys) with LRU eviction. Signal's implementation uses this approach.  
+                  
+  H3: FFI layer bypasses public key validation                                                                          
+                  
+  File: session_ffi.rs:320, session_ffi.rs:362                                                                          
+   
+  The FFI store implementations use PublicKey::from_bytes(pub_bytes) (no validation) when constructing keys from        
+  callback data:  
+                                                                                                                        
+  // session_ffi.rs:320 — PreKeyStore::get_pre_key
+  public: PublicKey::from_bytes(pub_bytes),                                                                             
+   
+  // session_ffi.rs:362 — SignedPreKeyStore::get_signed_pre_key                                                         
+  public: PublicKey::from_bytes(pub_bytes),
+                                                                                                                        
+  If the FFI callback returns all-zeros for a public key, it would be accepted. A malicious or buggy host application   
+  could inject a zero public key, which would then produce a zero DH output (the check in curve::dh catches this, but
+  the key itself shouldn't be accepted).                                                                                
+                  
+  Fix: Use PublicKey::from_bytes_validated in both FFI store implementations, and propagate the error.                  
+   
+  ---                                                                                                                   
+  MEDIUM Severity 
+                 
+  M1: Group AEAD uses empty associated data
+                                                                                                                        
+  File: group.rs:198
+                                                                                                                        
+  let ciphertext = aead::encrypt(message_key.as_bytes(), &nonce, plaintext, &[])?;
+                                                                                                                        
+  In 1:1 messaging, the AEAD's AD includes ad || header_bytes, binding the ciphertext to session context and the ratchet
+   state. In group messaging, AD is empty. The XEdDSA signature over chain_id || iteration || ciphertext provides       
+  integrity, but the AEAD itself doesn't bind to any group context.                                                     
+                  
+  If an attacker has the sender key chain for two groups (because the same user is in both), they could theoretically   
+  replay a ciphertext. The signature prevents this across chains (different signing keys), but within a chain (which
+  shouldn't happen for different groups), the empty AD provides no protection.                                          
+                  
+  Fix: Include chain_id in the AEAD's associated data: aead::encrypt(mk, &nonce, plaintext, &chain_id.to_be_bytes()).   
+   
+  M2: SenderKeyRecord::add_state doesn't deduplicate chain IDs                                                          
+                  
+  File: group.rs:86-89                                                                                                  
+                  
+  pub fn add_state(&mut self, state: SenderKeyState) {
+      self.states.insert(0, state);                                                                                     
+      self.states.truncate(MAX_SENDER_KEY_STATES);
+  }                                                                                                                     
+                  
+  A distribution message with a duplicate chain_id creates a shadow entry. state_for_chain_id returns the first match   
+  (the newest), so the old chain becomes unreachable. Messages encrypted under the old chain's keys would fail to
+  decrypt.                                                                                                              
+                  
+  While distribution messages travel over authenticated 1:1 channels, a compromised or buggy sender could disrupt a     
+  receiver's group state.
+                                                                                                                        
+  Fix: Remove existing states with the same chain_id before inserting.                                                  
+   
+  M3: Test store always trusts all identities — trust model untested                                                    
+                  
+  File: testing.rs:67-69                                                                                                
+   
+  async fn is_trusted_identity(&self, ...) -> Result<bool> {                                                            
+      Ok(true)                                                                                                          
+  }
+                                                                                                                        
+  The TOFU (Trust-On-First-Use) or manual verification logic that a production store must implement is never exercised  
+  by the test suite. If the trust check has a logic error, no test catches it.
+                                                                                                                        
+  Fix: Add test modes for TOFU (reject on identity change) and explicit verification.                                   
+   
+  ---                                                                                                                   
+  LOW Severity    
+              
+  L1: No signed pre-key expiration enforcement
+                                                                                                                        
+  Files: keys.rs:77-82, x3dh.rs:32-84                                                                                   
+                                                                                                                        
+  SignedPreKey.timestamp is stored but never checked. The X3DH initiator accepts bundles with arbitrarily old signed    
+  pre-keys. A compromised signed pre-key from the past would remain valid indefinitely.
+                                                                                                                        
+  Fix: Accept a max_spk_age parameter in x3dh_initiate / pqxdh_initiate and reject stale bundles.                       
+   
+  L2: PackMessage version field accepted but not validated                                                              
+                  
+  Files: message.rs:37-49                                                                                               
+                  
+  PackMessage::deserialize reads the version byte but never checks it. If a future version changes the wire format, old 
+  clients would silently misparse instead of failing fast with a version error.
+                                                                                                                        
+  Fix: Reject unknown versions in deserialization.                                                                      
+   
+  L3: Serialized ratchet state documented as needing encryption, but not enforced                                       
+                  
+  Files: ratchet.rs:84, session.rs:60                                                                                   
+                  
+  Both RatchetState::to_bytes() and SessionState::to_bytes() have doc comments saying "callers MUST encrypt this data   
+  before writing to disk," but the API accepts raw bytes with no encryption wrapper. A caller who misses the doc comment
+   stores plaintext secrets.                                                                                            
+                  
+  Fix: Consider an API that requires a wrapping encryption key, or at minimum a runtime assertion/marker type.          
+   
+  L4: HashMap iteration order makes to_bytes() non-deterministic for skipped keys                                       
+                  
+  File: ratchet.rs:118-124                                                                                              
+                  
+  HashMap iteration order is arbitrary. Two RatchetState values with the same logical content can produce different byte
+   sequences. The round-trip test passes because deserialization rebuilds from the same byte order, but comparing
+  serialized states across different processes could yield false negatives.                                             
+                  
+  Fix: Sort skipped keys by (ratchet_key, message_number) before serialization, or use BTreeMap.                        
+   
+  L5: Sealed sender reconstructs handshake hash redundantly                                                             
+                  
+  File: sealed_sender.rs:317-322                                                                                        
+   
+  The h_at_sign value (handshake hash before EncryptAndHash) is reconstructed by re-running the entire Noise handshake  
+  including a second DH. The value was already computed at line 266 and could be saved before the mix_hash(h, 
+  encrypted_content) step. This is a performance concern, not a security issue — but the extra DH is ~125μs per message 
+  on mobile.      
+
+  ---
+  Cryptographic Correctness Verification
+                                                                                                                        
+  ┌───────────────┬───────────────────────┬────────────────────────────────────────────────────────────────────────┐ 
+  │   Component   │    Spec Compliance    │                                 Notes                                  │    
+  ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤ 
+  │ AES-256-GCM   │ NIST SP 800-38D       │ Correct — uses aes-gcm crate, 12-byte nonce, 16-byte tag               │    
+  ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤ 
+  │ HMAC-SHA256   │ RFC 2104 / 4231       │ Correct — verified against RFC 4231 test vectors                       │    
+  ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤    
+  │ HKDF-SHA256   │ RFC 5869              │ Correct — verified against all 3 appendix A test cases                 │    
+  ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤    
+  │ X25519 DH     │ RFC 7748              │ Correct — delegates to x25519-dalek                                    │ 
+  ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤    
+  │ XEdDSA        │ Signal spec §2        │ Correct — hedged nonces, sign-bit normalization, Montgomery↔Edwards    │ 
+  │               │                       │ conversion                                                             │    
+  ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤ 
+  │ X3DH          │ Signal spec §3.3-3.4  │ Correct — DH ordering (DH1..DH4), F prefix, HKDF params, AD format     │    
+  ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤ 
+  │ PQXDH         │ Signal PQXDH spec     │ Correct — extends X3DH with ML-KEM-768, implicit rejection handled     │    
+  ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤ 
+  │ Double        │ Signal spec §3.1-3.5  │ Correct — KDF_RK and KDF_CK match spec constants, DH ratchet step      │    
+  │ Ratchet       │                       │ ordering                                                               │ 
+  ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤    
+  │ Sender Keys   │ Signal spec           │ Correct — chain ratchet, XEdDSA signatures, out-of-order support       │ 
+  ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤    
+  │ Noise NK      │ noiseprotocol.org     │ Correct — handshake hash chain, MixHash/MixKey, identity binding       │    
+  │               │ §7.4                  │                                                                        │
+  ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤    
+  │ Safety        │ Signal spec           │ Correct — 5200 iterations SHA-512, symmetric display, scannable verify │
+  │ Numbers       │                       │                                                                        │    
+  └───────────────┴───────────────────────┴────────────────────────────────────────────────────────────────────────┘
+                                                                                                                        
+  ---                                                                                                                   
+  Dependency Audit
+                                                                                                                        
+  ┌──────────────────┬─────────┬──────────────────────────────────────────────────┐
+  │      Crate       │ Version │                      Status                      │
+  ├──────────────────┼─────────┼──────────────────────────────────────────────────┤
+  │ x25519-dalek     │ 2.x     │ Well-audited, constant-time                      │
+  ├──────────────────┼─────────┼──────────────────────────────────────────────────┤
+  │ ed25519-dalek    │ 2.x     │ Well-audited                                     │                                     
+  ├──────────────────┼─────────┼──────────────────────────────────────────────────┤
+  │ curve25519-dalek │ 4.x     │ Well-audited, group feature                      │                                     
+  ├──────────────────┼─────────┼──────────────────────────────────────────────────┤                                     
+  │ aes-gcm          │ 0.10    │ RustCrypto, well-maintained                      │
+  ├──────────────────┼─────────┼──────────────────────────────────────────────────┤                                     
+  │ hkdf             │ 0.12    │ RustCrypto                                       │
+  ├──────────────────┼─────────┼──────────────────────────────────────────────────┤                                     
+  │ hmac             │ 0.12    │ RustCrypto                                       │
+  ├──────────────────┼─────────┼──────────────────────────────────────────────────┤                                     
+  │ sha2             │ 0.10    │ RustCrypto                                       │
+  ├──────────────────┼─────────┼──────────────────────────────────────────────────┤
+  │ ml-kem           │ 0.3     │ FIPS 203 implementation with zeroize + getrandom │
+  ├──────────────────┼─────────┼──────────────────────────────────────────────────┤                                     
+  │ subtle           │ 2.x     │ Constant-time operations                         │
+  ├──────────────────┼─────────┼──────────────────────────────────────────────────┤                                     
+  │ zeroize          │ 1.x     │ Memory zeroization                               │
+  ├──────────────────┼─────────┼──────────────────────────────────────────────────┤                                     
+  │ rand             │ 0.8     │ OsRng for all key generation                     │
+  └──────────────────┴─────────┴──────────────────────────────────────────────────┘                                     
+                  
+  All dependencies are from the RustCrypto ecosystem or well-known Rust crypto libraries. No red flags.                 
+   
+  ---                                                                                                                   
+  Recommendations (priority order)
+                                                                                                                        
+  1. Zeroize shared secrets (H1) — Wrap all result struct shared_secret fields in Zeroizing<[u8; 32]>
+  2. Add global skipped-key cap (H2) — Limit total skipped_keys entries to ~5000 with LRU eviction                      
+  3. Fix FFI key validation (H3) — Use from_bytes_validated in FFI store implementations                                
+  4. Add group context to AEAD AD (M1) — Bind group ciphertext to chain_id                                              
+  5. Deduplicate sender key chain IDs (M2) — Check for existing chain_id before inserting                               
+  6. Add trust model tests (M3) — Test TOFU rejection and identity change scenarios                                     
+  7. Enforce signed pre-key age (L1) — Reject bundles with stale SPK timestamps                                         
+  8. Validate message version (L2) — Reject unknown version bytes                                                       
+                                                                                                                        
+  Overall assessment: solid cryptographic implementation with well-chosen primitives, proper spec adherence, and good   
+  defensive patterns. The issues found are primarily around memory hygiene of secrets and missing bounds/validation at  
+  edges — all fixable without architectural changes.                                                                    
+                  
+
