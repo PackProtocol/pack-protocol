@@ -318,7 +318,7 @@ impl PreKeyStore for FfiStore {
         Ok(OneTimePreKey {
             id,
             key_pair: pack_protocol::crypto::curve::KeyPair {
-                public: PublicKey::from_bytes(pub_bytes),
+                public: PublicKey::from_bytes_validated(pub_bytes)?,
                 private: pack_protocol::crypto::curve::PrivateKey::from_bytes(priv_bytes),
             },
         })
@@ -360,7 +360,7 @@ impl SignedPreKeyStore for FfiStore {
         Ok(SignedPreKey {
             id,
             key_pair: pack_protocol::crypto::curve::KeyPair {
-                public: PublicKey::from_bytes(pub_bytes),
+                public: PublicKey::from_bytes_validated(pub_bytes)?,
                 private: pack_protocol::crypto::curve::PrivateKey::from_bytes(priv_bytes),
             },
             signature: sig_bytes,

@@ -139,6 +139,7 @@ pub struct PreKeyBundle {
     pub signed_pre_key_id: u32,
     pub signed_pre_key: PublicKey,
     pub signed_pre_key_signature: [u8; 64],
+    pub signed_pre_key_timestamp: u64,
     pub one_time_pre_key_id: Option<u32>,
     pub one_time_pre_key: Option<PublicKey>,
 }
@@ -150,6 +151,17 @@ impl PreKeyBundle {
             self.signed_pre_key.as_bytes(),
             &self.signed_pre_key_signature,
         )
+    }
+
+    /// Check that the signed pre-key is not older than `max_age_secs` relative to `now_secs`.
+    /// Both values are seconds since the UNIX epoch.
+    pub fn check_signed_pre_key_age(&self, now_secs: u64, max_age_secs: u64) -> Result<()> {
+        if now_secs.saturating_sub(self.signed_pre_key_timestamp) > max_age_secs {
+            return Err(crate::errors::PackError::InvalidMessage(
+                "signed pre-key has expired".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -205,6 +217,7 @@ pub struct PQPreKeyBundle {
     pub signed_pre_key_id: u32,
     pub signed_pre_key: PublicKey,
     pub signed_pre_key_signature: [u8; 64],
+    pub signed_pre_key_timestamp: u64,
     pub one_time_pre_key_id: Option<u32>,
     pub one_time_pre_key: Option<PublicKey>,
     pub pq_pre_key_id: u32,
@@ -224,6 +237,15 @@ impl PQPreKeyBundle {
         use ml_kem::kem::KeyExport;
         let ek_bytes = self.pq_pre_key.to_bytes();
         self.identity_key.verify(ek_bytes.as_ref(), &self.pq_pre_key_signature)
+    }
+
+    pub fn check_signed_pre_key_age(&self, now_secs: u64, max_age_secs: u64) -> Result<()> {
+        if now_secs.saturating_sub(self.signed_pre_key_timestamp) > max_age_secs {
+            return Err(crate::errors::PackError::InvalidMessage(
+                "signed pre-key has expired".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -283,6 +305,7 @@ mod tests {
             signed_pre_key_id: spk.id,
             signed_pre_key: spk.key_pair.public.clone(),
             signed_pre_key_signature: spk.signature,
+            signed_pre_key_timestamp: spk.timestamp,
             one_time_pre_key_id: Some(opk.id),
             one_time_pre_key: Some(opk.key_pair.public.clone()),
         };
@@ -300,6 +323,7 @@ mod tests {
             signed_pre_key_id: spk.id,
             signed_pre_key: spk.key_pair.public.clone(),
             signed_pre_key_signature: spk.signature,
+            signed_pre_key_timestamp: spk.timestamp,
             one_time_pre_key_id: None,
             one_time_pre_key: None,
         };

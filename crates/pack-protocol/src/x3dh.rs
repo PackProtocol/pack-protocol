@@ -10,8 +10,8 @@ use crate::keys::{IdentityKeyPair, IdentityKey, PreKeyBundle};
 
 /// Result of the initiator side of X3DH.
 pub struct X3DHInitResult {
-    /// The derived shared secret (SK)
-    pub shared_secret: [u8; 32],
+    /// The derived shared secret (SK) — zeroized on drop
+    pub shared_secret: Zeroizing<[u8; 32]>,
     /// The ephemeral public key Alice generated (sent to Bob)
     pub ephemeral_public: PublicKey,
     /// Associated data: Encode(IK_A) || Encode(IK_B)
@@ -67,7 +67,7 @@ pub fn x3dh_initiate(
 
     let salt = [0u8; 32];
     let sk_bytes = Zeroizing::new(kdf::hkdf_derive(&ikm, &salt, b"X3DH", 32)?);
-    let mut shared_secret = [0u8; 32];
+    let mut shared_secret = Zeroizing::new([0u8; 32]);
     shared_secret.copy_from_slice(&sk_bytes);
 
     // Step 5: build associated data
@@ -121,7 +121,7 @@ pub fn x3dh_respond(
 
     let salt = [0u8; 32];
     let sk_bytes = Zeroizing::new(kdf::hkdf_derive(&ikm, &salt, b"X3DH", 32)?);
-    let mut shared_secret = [0u8; 32];
+    let mut shared_secret = Zeroizing::new([0u8; 32]);
     shared_secret.copy_from_slice(&sk_bytes);
 
     // Build associated data: AD = IK_A || IK_B
@@ -137,8 +137,8 @@ pub fn x3dh_respond(
 
 /// Result of the responder side of X3DH.
 pub struct X3DHRespondResult {
-    /// The derived shared secret (SK) — must match the initiator's
-    pub shared_secret: [u8; 32],
+    /// The derived shared secret (SK) — must match the initiator's, zeroized on drop
+    pub shared_secret: Zeroizing<[u8; 32]>,
     /// Associated data: Encode(IK_A) || Encode(IK_B)
     pub associated_data: Vec<u8>,
 }
@@ -158,6 +158,7 @@ mod tests {
             signed_pre_key_id: spk.id,
             signed_pre_key: spk.public_key().clone(),
             signed_pre_key_signature: spk.signature,
+            signed_pre_key_timestamp: spk.timestamp,
             one_time_pre_key_id: opk.map(|o| o.id),
             one_time_pre_key: opk.map(|o| o.public_key().clone()),
         }
@@ -242,6 +243,7 @@ mod tests {
             signed_pre_key_id: bob_spk.id,
             signed_pre_key: bob_spk.public_key().clone(),
             signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
             one_time_pre_key_id: None,
             one_time_pre_key: None,
         };

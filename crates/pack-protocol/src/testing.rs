@@ -64,8 +64,11 @@ impl IdentityKeyStore for InMemoryStore {
         Ok(changed)
     }
 
-    async fn is_trusted_identity(&self, _address: &ProtocolAddress, _identity: &IdentityKey, _direction: Direction) -> Result<bool> {
-        Ok(true)
+    async fn is_trusted_identity(&self, address: &ProtocolAddress, identity: &IdentityKey, _direction: Direction) -> Result<bool> {
+        match self.identities.get(&addr_key(address)) {
+            None => Ok(true),
+            Some(existing) => Ok(existing == identity),
+        }
     }
 
     async fn get_identity(&self, address: &ProtocolAddress) -> Result<Option<IdentityKey>> {

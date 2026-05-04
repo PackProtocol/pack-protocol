@@ -4,6 +4,8 @@
 // by any language binding (C, C++, Kotlin/JNI, Swift). They use fixed byte
 // sequences to detect accidental format changes.
 
+use zeroize::Zeroizing;
+
 use pack_protocol::keys::{IdentityKeyPair, IdentityKey};
 use pack_protocol::crypto::curve::{KeyPair, PublicKey};
 use pack_protocol::ratchet::{self, MessageHeader, RatchetState};
@@ -85,7 +87,7 @@ fn test_pre_key_pack_message_wire_format_roundtrip() {
 #[test]
 fn test_session_state_serialization_format_stability() {
     let kp = KeyPair::generate();
-    let ratchet = ratchet::ratchet_init_responder([0x42; 32], kp);
+    let ratchet = ratchet::ratchet_init_responder(Zeroizing::new([0x42; 32]), kp);
     let local_id = IdentityKeyPair::generate();
     let remote_id = IdentityKeyPair::generate();
 
@@ -108,7 +110,7 @@ fn test_session_state_serialization_format_stability() {
     // With base key and initiator flag
     let base = KeyPair::generate().public;
     let kp2 = KeyPair::generate();
-    let ratchet2 = ratchet::ratchet_init_responder([0x43; 32], kp2);
+    let ratchet2 = ratchet::ratchet_init_responder(Zeroizing::new([0x43; 32]), kp2);
     let state2 = SessionState {
         ratchet: ratchet2,
         local_identity: local_id.public.clone(),
@@ -132,7 +134,7 @@ fn test_session_record_serialization_with_previous_states() {
     let mut record = SessionRecord::new();
     for i in 0u8..3 {
         let kp = KeyPair::generate();
-        let ratchet = ratchet::ratchet_init_responder([i; 32], kp);
+        let ratchet = ratchet::ratchet_init_responder(Zeroizing::new([i; 32]), kp);
         let state = SessionState {
             ratchet,
             local_identity: local_id.public.clone(),
@@ -176,8 +178,8 @@ fn test_ratchet_state_serialization_preserves_skipped_keys() {
     let bob_pub = bob_kp.public.clone();
     let shared_secret = [0x42; 32];
 
-    let mut alice = ratchet::ratchet_init_initiator(shared_secret, &bob_pub).unwrap();
-    let mut bob = ratchet::ratchet_init_responder(shared_secret, bob_kp);
+    let mut alice = ratchet::ratchet_init_initiator(Zeroizing::new(shared_secret), &bob_pub).unwrap();
+    let mut bob = ratchet::ratchet_init_responder(Zeroizing::new(shared_secret), bob_kp);
     let ad = b"interop-test";
 
     // Alice sends 3 messages
