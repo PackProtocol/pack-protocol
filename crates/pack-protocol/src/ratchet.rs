@@ -327,7 +327,8 @@ pub fn ratchet_encrypt(
     };
 
     // Step 3: increment counter
-    state.send_count += 1;
+    state.send_count = state.send_count.checked_add(1)
+        .ok_or(PackError::InvalidMessage("send counter overflow".into()))?;
 
     // Step 4: AEAD encrypt
     // Full AD = ad || header_bytes
@@ -345,57 +346,60 @@ pub fn ratchet_encrypt(
 
 /// Decrypt a received message (spec §3.4).
 ///
-/// 1. If header.ratchet_key != DHr: perform DH ratchet step
-/// 2. Check MKSKIPPED for (header.ratchet_key, header.message_number)
-/// 3. Skip message keys up to header.message_number
-/// 4. Derive message key and decrypt
+/// All state mutations happen on a clone. The real state is only updated
+/// after AEAD verification succeeds, so a forged message cannot corrupt
+/// the session.
 pub fn ratchet_decrypt(
     state: &mut RatchetState,
     header: &MessageHeader,
     ciphertext: &[u8],
     ad: &[u8],
 ) -> Result<Vec<u8>> {
-    // Step 2: check skipped keys first
+    // Check skipped keys first
     let skip_id = SkippedKeyId {
         ratchet_key: *header.ratchet_key.as_bytes(),
         message_number: header.message_number,
     };
-    if let Some((mk, _seq)) = state.skipped_keys.remove(&skip_id) {
+    if let Some((mk, seq)) = state.skipped_keys.remove(&skip_id) {
         let header_bytes = header.to_bytes();
         let mut full_ad = Vec::with_capacity(ad.len() + header_bytes.len());
         full_ad.extend_from_slice(ad);
         full_ad.extend_from_slice(&header_bytes);
 
         let nonce = derive_nonce(mk.as_bytes());
-        return aead::decrypt(mk.as_bytes(), &nonce, ciphertext, &full_ad);
+        match aead::decrypt(mk.as_bytes(), &nonce, ciphertext, &full_ad) {
+            Ok(plaintext) => return Ok(plaintext),
+            Err(e) => {
+                state.skipped_keys.insert(skip_id, (mk, seq));
+                return Err(e);
+            }
+        }
     }
 
-    // Step 1: DH ratchet step if new ratchet key
-    let need_dh_ratchet = match &state.dh_remote {
+    // Work on a clone — real state is untouched until AEAD succeeds
+    let mut trial = state.clone();
+
+    let need_dh_ratchet = match &trial.dh_remote {
         None => true,
         Some(existing) => existing != &header.ratchet_key,
     };
 
     if need_dh_ratchet {
-        // Skip remaining keys in current receiving chain
-        if state.receiving_chain.is_some() && state.dh_remote.is_some() {
-            skip_message_keys(state, state.dh_remote.as_ref().unwrap().clone(), header.prev_chain_length)?;
+        if trial.receiving_chain.is_some() && trial.dh_remote.is_some() {
+            let remote = trial.dh_remote.as_ref().unwrap().clone();
+            skip_message_keys(&mut trial, remote, header.prev_chain_length)?;
         }
-
-        // DH ratchet step (spec §3.5)
-        dh_ratchet_step(state, &header.ratchet_key)?;
+        dh_ratchet_step(&mut trial, &header.ratchet_key)?;
     }
 
-    // Step 3: skip message keys up to header.message_number
-    skip_message_keys_current(state, header.message_number)?;
+    skip_message_keys_current(&mut trial, header.message_number)?;
 
-    // Step 4: derive message key and decrypt
-    let ck = state.receiving_chain.take().ok_or_else(|| {
+    let ck = trial.receiving_chain.take().ok_or_else(|| {
         PackError::InvalidMessage("no receiving chain".into())
     })?;
     let (new_ck, mk) = chain::kdf_ck(&ck);
-    state.receiving_chain = Some(new_ck);
-    state.recv_count += 1;
+    trial.receiving_chain = Some(new_ck);
+    trial.recv_count += 1;
 
     let header_bytes = header.to_bytes();
     let mut full_ad = Vec::with_capacity(ad.len() + header_bytes.len());
@@ -403,7 +407,11 @@ pub fn ratchet_decrypt(
     full_ad.extend_from_slice(&header_bytes);
 
     let nonce = derive_nonce(mk.as_bytes());
-    aead::decrypt(mk.as_bytes(), &nonce, ciphertext, &full_ad)
+    let plaintext = aead::decrypt(mk.as_bytes(), &nonce, ciphertext, &full_ad)?;
+
+    // AEAD succeeded — commit trial state
+    *state = trial;
+    Ok(plaintext)
 }
 
 /// DH ratchet step (spec §3.5).
@@ -652,6 +660,40 @@ mod tests {
         ct[0] ^= 0xFF;
         let result = ratchet_decrypt(&mut bob, &header, &ct, ad);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_forged_message_does_not_corrupt_state() {
+        let (mut alice, mut bob) = setup_alice_bob();
+        let ad = b"ad";
+
+        let (h1, ct1) = ratchet_encrypt(&mut alice, b"msg1", ad).unwrap();
+        ratchet_decrypt(&mut bob, &h1, &ct1, ad).unwrap();
+
+        // Alice sends a legitimate message but an attacker tampers the ciphertext
+        let (h2, mut ct2) = ratchet_encrypt(&mut alice, b"msg2", ad).unwrap();
+        ct2[0] ^= 0xFF;
+        assert!(ratchet_decrypt(&mut bob, &h2, &ct2, ad).is_err());
+
+        // Forged DH ratchet: attacker crafts a header with a new ratchet key
+        let fake_kp = KeyPair::generate();
+        let forged_header = MessageHeader {
+            ratchet_key: fake_kp.public,
+            prev_chain_length: 1,
+            message_number: 0,
+        };
+        assert!(ratchet_decrypt(&mut bob, &forged_header, b"garbage", ad).is_err());
+
+        // Bob's state must still work — Alice resends the real message
+        let (h2_real, ct2_real) = ratchet_encrypt(&mut alice, b"msg2 resend", ad).unwrap();
+        assert_eq!(
+            ratchet_decrypt(&mut bob, &h2_real, &ct2_real, ad).unwrap(),
+            b"msg2 resend"
+        );
+
+        // Session continues normally in both directions
+        let (h3, ct3) = ratchet_encrypt(&mut bob, b"bob reply", ad).unwrap();
+        assert_eq!(ratchet_decrypt(&mut alice, &h3, &ct3, ad).unwrap(), b"bob reply");
     }
 
     #[test]

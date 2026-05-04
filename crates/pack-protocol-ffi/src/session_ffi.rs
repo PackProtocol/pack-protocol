@@ -88,6 +88,30 @@ type GetSignedPreKeyCb = unsafe extern "C" fn(
     out_public: *mut u8,
     out_private: *mut u8,
     out_signature: *mut u8,
+    out_timestamp: *mut u64,
+) -> i32;
+
+type StoreSenderKeyCb = unsafe extern "C" fn(
+    ctx: *mut std::ffi::c_void,
+    sender_name: *const u8,
+    sender_name_len: usize,
+    sender_device_id: u32,
+    distribution_id: *const u8,
+    distribution_id_len: usize,
+    data: *const u8,
+    data_len: usize,
+) -> i32;
+
+type LoadSenderKeyCb = unsafe extern "C" fn(
+    ctx: *mut std::ffi::c_void,
+    sender_name: *const u8,
+    sender_name_len: usize,
+    sender_device_id: u32,
+    distribution_id: *const u8,
+    distribution_id_len: usize,
+    out_buf: *mut u8,
+    buf_len: usize,
+    out_len: *mut usize,
 ) -> i32;
 
 #[repr(C)]
@@ -103,6 +127,8 @@ pub struct PackSessionStoreCallbacks {
     get_pre_key: GetPreKeyCb,
     remove_pre_key: RemovePreKeyCb,
     get_signed_pre_key: GetSignedPreKeyCb,
+    store_sender_key: StoreSenderKeyCb,
+    load_sender_key: LoadSenderKeyCb,
 }
 
 struct FfiStore {
@@ -343,6 +369,7 @@ impl SignedPreKeyStore for FfiStore {
         let mut pub_bytes = [0u8; 32];
         let mut priv_bytes = [0u8; 32];
         let mut sig_bytes = [0u8; 64];
+        let mut timestamp: u64 = 0;
         let rc = unsafe {
             (self.cbs.get_signed_pre_key)(
                 self.cbs.ctx,
@@ -350,6 +377,7 @@ impl SignedPreKeyStore for FfiStore {
                 pub_bytes.as_mut_ptr(),
                 priv_bytes.as_mut_ptr(),
                 sig_bytes.as_mut_ptr(),
+                &mut timestamp,
             )
         };
         if rc != STORE_OK {
@@ -364,7 +392,7 @@ impl SignedPreKeyStore for FfiStore {
                 private: pack_protocol::crypto::curve::PrivateKey::from_bytes(priv_bytes),
             },
             signature: sig_bytes,
-            timestamp: 0,
+            timestamp,
         })
     }
 
@@ -377,19 +405,78 @@ impl SignedPreKeyStore for FfiStore {
 impl pack_protocol::store::SenderKeyStore for FfiStore {
     async fn store_sender_key(
         &mut self,
-        _sender: &ProtocolAddress,
-        _distribution_id: &str,
-        _record: &pack_protocol::group::SenderKeyRecord,
+        sender: &ProtocolAddress,
+        distribution_id: &str,
+        record: &pack_protocol::group::SenderKeyRecord,
     ) -> PackResult<()> {
+        let name = sender.name.as_bytes();
+        let dist = distribution_id.as_bytes();
+        let data = record.to_bytes();
+        let rc = unsafe {
+            (self.cbs.store_sender_key)(
+                self.cbs.ctx,
+                name.as_ptr(),
+                name.len(),
+                sender.device_id,
+                dist.as_ptr(),
+                dist.len(),
+                data.as_ptr(),
+                data.len(),
+            )
+        };
+        if rc != STORE_OK {
+            return Err(PackError::Storage("store_sender_key callback failed".into()));
+        }
         Ok(())
     }
 
     async fn load_sender_key(
         &self,
-        _sender: &ProtocolAddress,
-        _distribution_id: &str,
+        sender: &ProtocolAddress,
+        distribution_id: &str,
     ) -> PackResult<Option<pack_protocol::group::SenderKeyRecord>> {
-        Ok(None)
+        let name = sender.name.as_bytes();
+        let dist = distribution_id.as_bytes();
+        let mut len: usize = 0;
+        let rc = unsafe {
+            (self.cbs.load_sender_key)(
+                self.cbs.ctx,
+                name.as_ptr(),
+                name.len(),
+                sender.device_id,
+                dist.as_ptr(),
+                dist.len(),
+                std::ptr::null_mut(),
+                0,
+                &mut len,
+            )
+        };
+        if rc != STORE_OK {
+            return Err(PackError::Storage("load_sender_key callback failed".into()));
+        }
+        if len == 0 {
+            return Ok(None);
+        }
+        let mut buf = vec![0u8; len];
+        let mut actual_len: usize = 0;
+        let rc = unsafe {
+            (self.cbs.load_sender_key)(
+                self.cbs.ctx,
+                name.as_ptr(),
+                name.len(),
+                sender.device_id,
+                dist.as_ptr(),
+                dist.len(),
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut actual_len,
+            )
+        };
+        if rc != STORE_OK {
+            return Err(PackError::Storage("load_sender_key callback failed".into()));
+        }
+        buf.truncate(actual_len);
+        Ok(Some(pack_protocol::group::SenderKeyRecord::from_bytes(&buf)?))
     }
 }
 
@@ -422,9 +509,10 @@ pub unsafe extern "C" fn pack_session_encrypt(
     let addr = ProtocolAddress::new(name, remote_device_id);
     let pt = slice::from_raw_parts(plaintext, plaintext_len);
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
+    let rt = match tokio::runtime::Builder::new_current_thread().build() {
+        Ok(rt) => rt,
+        Err(_) => return PackFfiError::InternalError,
+    };
     match rt.block_on(session::session_encrypt(&mut store, &addr, pt)) {
         Ok(msg) => {
             let bytes = msg.serialize();
@@ -467,9 +555,10 @@ pub unsafe extern "C" fn pack_session_decrypt(
         Err(e) => return PackFfiError::from(e),
     };
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
+    let rt = match tokio::runtime::Builder::new_current_thread().build() {
+        Ok(rt) => rt,
+        Err(_) => return PackFfiError::InternalError,
+    };
     match rt.block_on(session::session_decrypt(&mut store, &addr, &msg)) {
         Ok(pt) => {
             if !handles::write_bytes(&pt, out_buf, buf_len, out_len) {
@@ -522,9 +611,10 @@ pub unsafe extern "C" fn pack_session_process_pre_key_message(
         Err(e) => return PackFfiError::from(e),
     };
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
+    let rt = match tokio::runtime::Builder::new_current_thread().build() {
+        Ok(rt) => rt,
+        Err(_) => return PackFfiError::InternalError,
+    };
     match rt.block_on(session::process_pre_key_message(
         &mut store,
         &our_addr,

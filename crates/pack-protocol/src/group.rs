@@ -92,6 +92,89 @@ impl SenderKeyRecord {
     fn state_for_chain_id(&self, chain_id: u32) -> Option<usize> {
         self.states.iter().position(|s| s.chain_id == chain_id)
     }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(self.states.len() as u32).to_be_bytes());
+        for state in &self.states {
+            out.extend_from_slice(&state.chain_id.to_be_bytes());
+            out.extend_from_slice(&state.iteration.to_be_bytes());
+            out.extend_from_slice(state.chain_key.as_bytes());
+            out.extend_from_slice(state.signing_key.as_bytes());
+            match &state.signing_private {
+                Some(pk) => { out.push(1); out.extend_from_slice(pk.as_bytes()); }
+                None => { out.push(0); }
+            }
+            out.extend_from_slice(&(state.skipped_keys.len() as u32).to_be_bytes());
+            for (&iter, mk) in &state.skipped_keys {
+                out.extend_from_slice(&iter.to_be_bytes());
+                out.extend_from_slice(mk.as_bytes());
+            }
+        }
+        out
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        let mut pos = 0;
+        let read = |pos: &mut usize, len: usize| -> Result<&[u8]> {
+            if *pos + len > data.len() {
+                return Err(PackError::InvalidMessage("sender key record truncated".into()));
+            }
+            let slice = &data[*pos..*pos + len];
+            *pos += len;
+            Ok(slice)
+        };
+
+        let count_bytes = read(&mut pos, 4)?;
+        let count = u32::from_be_bytes([count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3]]) as usize;
+
+        let mut states = Vec::with_capacity(count);
+        for _ in 0..count {
+            let cid = read(&mut pos, 4)?;
+            let chain_id = u32::from_be_bytes([cid[0], cid[1], cid[2], cid[3]]);
+
+            let it = read(&mut pos, 4)?;
+            let iteration = u32::from_be_bytes([it[0], it[1], it[2], it[3]]);
+
+            let mut ck = [0u8; 32];
+            ck.copy_from_slice(read(&mut pos, 32)?);
+
+            let mut sk = [0u8; 32];
+            sk.copy_from_slice(read(&mut pos, 32)?);
+
+            let has_private = read(&mut pos, 1)?[0];
+            let signing_private = if has_private == 1 {
+                let mut pk = [0u8; 32];
+                pk.copy_from_slice(read(&mut pos, 32)?);
+                Some(crate::crypto::curve::PrivateKey::from_bytes(pk))
+            } else { None };
+
+            let sk_count_bytes = read(&mut pos, 4)?;
+            let sk_count = u32::from_be_bytes([
+                sk_count_bytes[0], sk_count_bytes[1], sk_count_bytes[2], sk_count_bytes[3],
+            ]) as usize;
+
+            let mut skipped_keys = HashMap::with_capacity(sk_count);
+            for _ in 0..sk_count {
+                let ib = read(&mut pos, 4)?;
+                let iter = u32::from_be_bytes([ib[0], ib[1], ib[2], ib[3]]);
+                let mut mk = [0u8; 32];
+                mk.copy_from_slice(read(&mut pos, 32)?);
+                skipped_keys.insert(iter, MessageKey::from_bytes(mk));
+            }
+
+            states.push(SenderKeyState {
+                chain_id,
+                iteration,
+                chain_key: ChainKey::from_bytes(ck),
+                signing_key: PublicKey::from_bytes_validated(sk)?,
+                signing_private,
+                skipped_keys,
+            });
+        }
+
+        Ok(Self { states })
+    }
 }
 
 /// Create a new sender key distribution message for a group.
@@ -201,7 +284,8 @@ pub fn group_encrypt(
 
     // Update chain state
     state.chain_key = new_chain_key;
-    state.iteration += 1;
+    state.iteration = state.iteration.checked_add(1)
+        .ok_or(PackError::InvalidMessage("group iteration counter overflow".into()))?;
 
     // Sign the message content (chain_id || iteration || ciphertext)
     let mut sign_data = Vec::new();
@@ -253,22 +337,20 @@ pub fn group_decrypt(
         return Err(PackError::TooManySkippedMessages);
     }
 
-    // Ratchet forward, caching skipped message keys
+    let new_iteration = message.iteration.checked_add(1)
+        .ok_or(PackError::InvalidMessage("iteration counter overflow".into()))?;
+
+    // Derive keys into temporaries — state is not mutated until AEAD succeeds
     let mut current_chain = ChainKey::from_bytes(*state.chain_key.as_bytes());
     let mut target_mk: Option<MessageKey> = None;
+    let mut pending_skipped: Vec<(u32, MessageKey)> = Vec::new();
 
     for i in 0..=skip_count {
         let (next_chain, mk) = kdf_ck(&current_chain);
         if i == skip_count {
             target_mk = Some(mk);
         } else {
-            let skipped_iteration = state.iteration + i;
-            state.skipped_keys.insert(skipped_iteration, mk);
-            // Evict oldest if over limit
-            if state.skipped_keys.len() > MAX_MESSAGE_KEYS {
-                let oldest = *state.skipped_keys.keys().min().unwrap();
-                state.skipped_keys.remove(&oldest);
-            }
+            pending_skipped.push((state.iteration + i, mk));
         }
         current_chain = next_chain;
     }
@@ -278,9 +360,16 @@ pub fn group_decrypt(
 
     let plaintext = aead::decrypt(message_key.as_bytes(), &nonce, &message.ciphertext, &ad)?;
 
-    // Update state to reflect the advancement
+    // AEAD succeeded — commit skipped keys and advance state
+    for (iter, mk) in pending_skipped {
+        state.skipped_keys.insert(iter, mk);
+        if state.skipped_keys.len() > MAX_MESSAGE_KEYS {
+            let oldest = *state.skipped_keys.keys().min().unwrap();
+            state.skipped_keys.remove(&oldest);
+        }
+    }
     state.chain_key = current_chain;
-    state.iteration = message.iteration + 1;
+    state.iteration = new_iteration;
 
     Ok(plaintext)
 }
@@ -452,5 +541,44 @@ mod tests {
 
         assert_eq!(sender_record.states[0].iteration, 2);
         let _ = dist_msg; // used above
+    }
+
+    #[test]
+    fn test_sender_key_record_serialization_roundtrip() {
+        let mut sender_record = SenderKeyRecord::new();
+        let dist_msg = create_sender_key_distribution_message("group-1", &mut sender_record).unwrap();
+
+        let mut receiver_record = SenderKeyRecord::new();
+        process_sender_key_distribution_message(&mut receiver_record, &dist_msg);
+
+        // Send some messages to advance the chain
+        let e1 = group_encrypt(&mut sender_record, b"msg1").unwrap();
+        let e2 = group_encrypt(&mut sender_record, b"msg2").unwrap();
+        let e3 = group_encrypt(&mut sender_record, b"msg3").unwrap();
+
+        // Receive out of order to populate skipped keys
+        group_decrypt(&mut receiver_record, &e3).unwrap();
+
+        // Serialize and restore the receiver
+        let bytes = receiver_record.to_bytes();
+        let mut restored = SenderKeyRecord::from_bytes(&bytes).unwrap();
+
+        // Skipped keys should still work
+        let d1 = group_decrypt(&mut restored, &e1).unwrap();
+        assert_eq!(d1, b"msg1");
+        let d2 = group_decrypt(&mut restored, &e2).unwrap();
+        assert_eq!(d2, b"msg2");
+
+        // New messages should also work
+        let e4 = group_encrypt(&mut sender_record, b"msg4").unwrap();
+        let d4 = group_decrypt(&mut restored, &e4).unwrap();
+        assert_eq!(d4, b"msg4");
+
+        // Also test sender-side round-trip
+        let sender_bytes = sender_record.to_bytes();
+        let mut sender_restored = SenderKeyRecord::from_bytes(&sender_bytes).unwrap();
+        let e5 = group_encrypt(&mut sender_restored, b"msg5").unwrap();
+        let d5 = group_decrypt(&mut restored, &e5).unwrap();
+        assert_eq!(d5, b"msg5");
     }
 }

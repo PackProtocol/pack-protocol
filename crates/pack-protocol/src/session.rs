@@ -103,7 +103,10 @@ impl SessionState {
             Some(PublicKey::from_bytes_validated(b)?)
         } else { None };
 
-        let is_initiator = if pos < data.len() { data[pos] == 1 } else { false };
+        if pos >= data.len() {
+            return Err(PackError::InvalidMessage("session state truncated: missing is_initiator".into()));
+        }
+        let is_initiator = data[pos] == 1;
 
         Ok(Self {
             ratchet,

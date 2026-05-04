@@ -26,12 +26,15 @@ pub struct SenderCertificate {
 impl SenderCertificate {
     pub fn serialize_content(&self) -> Vec<u8> {
         let uuid_bytes = self.sender_uuid.as_bytes();
+        let server_cert_bytes = self.server_certificate.serialize();
         let mut out = Vec::new();
         out.extend_from_slice(&(uuid_bytes.len() as u32).to_be_bytes());
         out.extend_from_slice(uuid_bytes);
         out.extend_from_slice(&self.sender_device_id.to_be_bytes());
         out.extend_from_slice(self.sender_identity.as_bytes());
         out.extend_from_slice(&self.expiration.to_be_bytes());
+        out.extend_from_slice(&(server_cert_bytes.len() as u32).to_be_bytes());
+        out.extend_from_slice(&server_cert_bytes);
         out
     }
 
@@ -163,13 +166,9 @@ fn mix_key(ck: &[u8; 32], ikm: &[u8]) -> Result<([u8; 32], [u8; 32])> {
 }
 
 fn noise_nk_init(responder_static: &PublicKey) -> ([u8; 32], [u8; 32]) {
-    let protocol_hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(NOISE_NK_PROTOCOL);
-        let mut h = [0u8; 32];
-        h.copy_from_slice(&hasher.finalize());
-        h
-    };
+    // Noise spec §5.2: if len(protocol_name) <= HASHLEN, zero-pad to HASHLEN
+    let mut protocol_hash = [0u8; 32];
+    protocol_hash[..NOISE_NK_PROTOCOL.len()].copy_from_slice(NOISE_NK_PROTOCOL);
     let ck = protocol_hash;
     let h = mix_hash(&protocol_hash, responder_static.as_bytes());
     (h, ck)
@@ -334,6 +333,11 @@ fn deserialize_sealed_sender(data: &[u8]) -> Result<SealedSenderMessage> {
         return Err(PackError::InvalidMessage("sealed sender too short".into()));
     }
     let version = data[0];
+    if version != 2 {
+        return Err(PackError::InvalidMessage(
+            format!("unsupported sealed sender version: {version}"),
+        ));
+    }
     let mut eph_bytes = [0u8; 32];
     eph_bytes.copy_from_slice(&data[1..33]);
     let encrypted_content = data[33..].to_vec();

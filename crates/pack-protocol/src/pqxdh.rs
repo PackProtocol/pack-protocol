@@ -5,7 +5,7 @@
 
 use ml_kem::kem::Decapsulate;
 use ml_kem::Encapsulate;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::crypto::curve::{self, KeyPair, PublicKey};
 use crate::crypto::kdf;
@@ -58,7 +58,7 @@ pub fn pqxdh_initiate(
         .transpose()?;
 
     // Step 4: KEM encapsulation
-    let (kem_ct, kem_ss): (ml_kem::ml_kem_768::Ciphertext, ml_kem::SharedKey) =
+    let (kem_ct, mut kem_ss): (ml_kem::ml_kem_768::Ciphertext, ml_kem::SharedKey) =
         their_bundle.pq_pre_key.encapsulate();
 
     // Step 5: derive shared secret
@@ -72,6 +72,7 @@ pub fn pqxdh_initiate(
         ikm.extend_from_slice(&**dh4_val);
     }
     ikm.extend_from_slice(kem_ss.as_slice());
+    kem_ss.zeroize();
 
     let salt = [0u8; 32];
     let sk_bytes = Zeroizing::new(kdf::hkdf_derive(&ikm, &salt, b"PQXDH", 32)?);
@@ -129,7 +130,7 @@ pub fn pqxdh_respond(
     // KEM decapsulation
     let ct = ml_kem::ml_kem_768::Ciphertext::try_from(kem_ciphertext)
         .map_err(|_| PackError::InvalidMessage("invalid KEM ciphertext length".into()))?;
-    let kem_ss: ml_kem::SharedKey = our_pq_pre_key.decapsulation_key.decapsulate(&ct);
+    let mut kem_ss: ml_kem::SharedKey = our_pq_pre_key.decapsulation_key.decapsulate(&ct);
 
     // Derive shared secret
     let mut ikm = Zeroizing::new(Vec::with_capacity(32 * 6));
@@ -141,6 +142,7 @@ pub fn pqxdh_respond(
         ikm.extend_from_slice(&**dh4_val);
     }
     ikm.extend_from_slice(kem_ss.as_slice());
+    kem_ss.zeroize();
 
     let salt = [0u8; 32];
     let sk_bytes = Zeroizing::new(kdf::hkdf_derive(&ikm, &salt, b"PQXDH", 32)?);

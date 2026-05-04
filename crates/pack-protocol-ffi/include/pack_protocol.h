@@ -75,7 +75,27 @@ typedef int32_t (*GetSignedPreKeyCb)(void *ctx,
                                      uint32_t id,
                                      uint8_t *out_public,
                                      uint8_t *out_private,
-                                     uint8_t *out_signature);
+                                     uint8_t *out_signature,
+                                     uint64_t *out_timestamp);
+
+typedef int32_t (*StoreSenderKeyCb)(void *ctx,
+                                    const uint8_t *sender_name,
+                                    uintptr_t sender_name_len,
+                                    uint32_t sender_device_id,
+                                    const uint8_t *distribution_id,
+                                    uintptr_t distribution_id_len,
+                                    const uint8_t *data,
+                                    uintptr_t data_len);
+
+typedef int32_t (*LoadSenderKeyCb)(void *ctx,
+                                   const uint8_t *sender_name,
+                                   uintptr_t sender_name_len,
+                                   uint32_t sender_device_id,
+                                   const uint8_t *distribution_id,
+                                   uintptr_t distribution_id_len,
+                                   uint8_t *out_buf,
+                                   uintptr_t buf_len,
+                                   uintptr_t *out_len);
 
 typedef struct PackSessionStoreCallbacks {
     void *ctx;
@@ -89,6 +109,8 @@ typedef struct PackSessionStoreCallbacks {
     GetPreKeyCb get_pre_key;
     RemovePreKeyCb remove_pre_key;
     GetSignedPreKeyCb get_signed_pre_key;
+    StoreSenderKeyCb store_sender_key;
+    LoadSenderKeyCb load_sender_key;
 } PackSessionStoreCallbacks;
 
 enum PackFfiError pack_identity_key_pair_generate(IdentityKeyPair **out);
