@@ -269,11 +269,11 @@ pub fn sealed_sender_decrypt(
 
     // DecryptAndHash: AEAD_decrypt(k, nonce=0, ciphertext, ad=h)
     let nonce = [0u8; 12];
-    let payload = aead::decrypt(&k, &nonce, &msg.encrypted_content, &h)?;
+    let h_at_sign = h;
+    let payload = aead::decrypt(&k, &nonce, &msg.encrypted_content, &h_at_sign)?;
 
     // Complete Noise handshake transcript
-    h = mix_hash(&h, &msg.encrypted_content);
-    let _ = h;
+    let _h = mix_hash(&h_at_sign, &msg.encrypted_content);
 
     // Parse payload: cert_len || cert || identity_signature (64 bytes) || inner_message
     if payload.len() < 4 {
@@ -312,14 +312,6 @@ pub fn sealed_sender_decrypt(
 
     // Verify sender identity binding: the sender signed the handshake hash h
     // (captured before EncryptAndHash completed the transcript) with their identity key.
-    // We reconstruct h at that point: it's the h BEFORE mix_hash(h, ciphertext).
-    let h_at_sign = {
-        let (mut h_init, ck_init) = noise_nk_init(our_identity.public.public_key());
-        h_init = mix_hash(&h_init, msg.ephemeral_public.as_bytes());
-        let dh_re = Zeroizing::new(curve::dh(our_identity.private_key(), &msg.ephemeral_public)?);
-        let _ = mix_key(&ck_init, &*dh_re)?;
-        h_init
-    };
     curve::xeddsa_verify(cert.sender_identity.public_key(), &h_at_sign, &identity_sig)?;
 
     Ok(SealedSenderResult {

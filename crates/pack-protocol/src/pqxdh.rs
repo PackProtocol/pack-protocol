@@ -13,7 +13,7 @@ use crate::errors::Result;
 use crate::keys::{IdentityKeyPair, PQPreKey, PQPreKeyBundle};
 
 pub struct PQXDHInitResult {
-    pub shared_secret: [u8; 32],
+    pub shared_secret: Zeroizing<[u8; 32]>,
     pub ephemeral_public: PublicKey,
     pub kem_ciphertext: Vec<u8>,
     pub associated_data: Vec<u8>,
@@ -75,7 +75,7 @@ pub fn pqxdh_initiate(
 
     let salt = [0u8; 32];
     let sk_bytes = Zeroizing::new(kdf::hkdf_derive(&ikm, &salt, b"PQXDH", 32)?);
-    let mut shared_secret = [0u8; 32];
+    let mut shared_secret = Zeroizing::new([0u8; 32]);
     shared_secret.copy_from_slice(&sk_bytes);
 
     // Step 6: associated data
@@ -92,7 +92,7 @@ pub fn pqxdh_initiate(
 }
 
 pub struct PQXDHRespondResult {
-    pub shared_secret: [u8; 32],
+    pub shared_secret: Zeroizing<[u8; 32]>,
     pub associated_data: Vec<u8>,
 }
 
@@ -144,7 +144,7 @@ pub fn pqxdh_respond(
 
     let salt = [0u8; 32];
     let sk_bytes = Zeroizing::new(kdf::hkdf_derive(&ikm, &salt, b"PQXDH", 32)?);
-    let mut shared_secret = [0u8; 32];
+    let mut shared_secret = Zeroizing::new([0u8; 32]);
     shared_secret.copy_from_slice(&sk_bytes);
 
     // AD = IK_A || IK_B
@@ -174,6 +174,7 @@ mod tests {
             signed_pre_key_id: spk.id,
             signed_pre_key: spk.public_key().clone(),
             signed_pre_key_signature: spk.signature,
+            signed_pre_key_timestamp: spk.timestamp,
             one_time_pre_key_id: opk.map(|o| o.id),
             one_time_pre_key: opk.map(|o| o.public_key().clone()),
             pq_pre_key_id: pqpk.id,
@@ -248,6 +249,7 @@ mod tests {
             signed_pre_key_id: bob_spk.id,
             signed_pre_key: bob_spk.public_key().clone(),
             signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
             one_time_pre_key_id: None,
             one_time_pre_key: None,
             pq_pre_key_id: bob_pqpk.id,
@@ -271,6 +273,7 @@ mod tests {
             signed_pre_key_id: bob_spk.id,
             signed_pre_key: bob_spk.public_key().clone(),
             signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
             one_time_pre_key_id: None,
             one_time_pre_key: None,
             pq_pre_key_id: bob_pqpk.id,

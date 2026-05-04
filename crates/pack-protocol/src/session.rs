@@ -176,6 +176,29 @@ impl SessionRecord {
 
         Ok(Self { current, previous })
     }
+
+    /// Serialize and encrypt the session record for storage.
+    /// `storage_key` is a 32-byte key used to encrypt the session at rest.
+    pub fn to_bytes_encrypted(&self, storage_key: &[u8; 32]) -> Result<Vec<u8>> {
+        let plaintext = self.to_bytes();
+        let nonce: [u8; 12] = rand::random();
+        let ciphertext = crate::crypto::aead::encrypt(storage_key, &nonce, &plaintext, b"session-record")?;
+        let mut out = Vec::with_capacity(12 + ciphertext.len());
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
+    }
+
+    /// Decrypt and deserialize a session record from storage.
+    pub fn from_bytes_encrypted(data: &[u8], storage_key: &[u8; 32]) -> Result<Self> {
+        if data.len() < 12 {
+            return Err(PackError::InvalidMessage("encrypted session record too short".into()));
+        }
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&data[..12]);
+        let plaintext = crate::crypto::aead::decrypt(storage_key, &nonce, &data[12..], b"session-record")?;
+        Self::from_bytes_stored(&plaintext)
+    }
 }
 
 /// Process an incoming PreKeyPackMessage to establish a new session.
@@ -429,6 +452,7 @@ fn build_associated_data(state: &SessionState) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeroize::Zeroizing;
     use crate::crypto::curve::KeyPair;
     use crate::keys::{IdentityKeyPair, SignedPreKey, OneTimePreKey, PreKeyBundle};
     use crate::testing::InMemoryStore;
@@ -444,7 +468,7 @@ mod tests {
         let shared_secret = [0x42u8; 32];
         let kp = KeyPair::generate();
 
-        let ratchet = ratchet::ratchet_init_responder(shared_secret, kp);
+        let ratchet = ratchet::ratchet_init_responder(Zeroizing::new(shared_secret), kp);
         let state = SessionState {
             ratchet,
             local_identity: identity.public.clone(),
@@ -458,7 +482,7 @@ mod tests {
         assert_eq!(record.previous.len(), 0);
 
         let kp2 = KeyPair::generate();
-        let ratchet2 = ratchet::ratchet_init_responder([0x43; 32], kp2);
+        let ratchet2 = ratchet::ratchet_init_responder(Zeroizing::new([0x43; 32]), kp2);
         let state2 = SessionState {
             ratchet: ratchet2,
             local_identity: identity.public,
@@ -476,7 +500,7 @@ mod tests {
         let identity = IdentityKeyPair::generate();
         let remote_identity = IdentityKeyPair::generate();
         let kp = KeyPair::generate();
-        let ratchet_state = ratchet::ratchet_init_responder([0x42; 32], kp);
+        let ratchet_state = ratchet::ratchet_init_responder(Zeroizing::new([0x42; 32]), kp);
         let state = SessionState {
             ratchet: ratchet_state,
             local_identity: identity.public.clone(),
@@ -495,7 +519,7 @@ mod tests {
     fn test_ratchet_state_serialization_roundtrip() {
         let kp = KeyPair::generate();
         let their_pub = KeyPair::generate().public;
-        let mut state = ratchet::ratchet_init_initiator([0xAB; 32], &their_pub).unwrap();
+        let mut state = ratchet::ratchet_init_initiator(Zeroizing::new([0xAB; 32]), &their_pub).unwrap();
 
         let ad = b"test";
         let (h1, ct1) = ratchet::ratchet_encrypt(&mut state, b"hello", ad).unwrap();
@@ -517,6 +541,7 @@ mod tests {
             signed_pre_key_id: spk.id,
             signed_pre_key: spk.public_key().clone(),
             signed_pre_key_signature: spk.signature,
+            signed_pre_key_timestamp: spk.timestamp,
             one_time_pre_key_id: opk.map(|o| o.id),
             one_time_pre_key: opk.map(|o| o.public_key().clone()),
         }
@@ -588,7 +613,7 @@ mod tests {
         let base_key_high = PublicKey::from_bytes([0xFF; 32]);
         let base_key_low = PublicKey::from_bytes([0x01; 32]);
 
-        let ratchet_state = ratchet::ratchet_init_responder([0x42; 32], kp1);
+        let ratchet_state = ratchet::ratchet_init_responder(Zeroizing::new([0x42; 32]), kp1);
         let state = SessionState {
             ratchet: ratchet_state,
             local_identity: identity.public.clone(),
@@ -604,7 +629,7 @@ mod tests {
 
         // Our base key (0xFF) < incoming (would need higher): incoming wins
         let kp2 = KeyPair::generate();
-        let ratchet_state2 = ratchet::ratchet_init_responder([0x43; 32], kp2);
+        let ratchet_state2 = ratchet::ratchet_init_responder(Zeroizing::new([0x43; 32]), kp2);
         let state2 = SessionState {
             ratchet: ratchet_state2,
             local_identity: identity.public,
@@ -675,5 +700,119 @@ mod tests {
         let reply = session_encrypt(&mut bob_store, &alice_addr, b"reply on new session").await.unwrap();
         let reply_pt = session_decrypt(&mut alice_store, &bob_addr, &reply).await.unwrap();
         assert_eq!(reply_pt, b"reply on new session");
+    }
+
+    #[tokio::test]
+    async fn test_tofu_rejects_identity_change_on_send() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let bob_spk = SignedPreKey::generate(1, &bob_identity, 1000);
+        let bob_opk = OneTimePreKey::generate(100);
+
+        let mut alice_store = InMemoryStore::new(alice_identity, 1);
+        let bob_addr = ProtocolAddress::new("bob".into(), 1);
+
+        // Pre-save a different identity for Bob (simulates previously known identity)
+        let fake_bob_identity = IdentityKeyPair::generate();
+        alice_store.save_identity(&bob_addr, &fake_bob_identity.public).await.unwrap();
+
+        // Try to create session with the real Bob — should be rejected (identity changed)
+        let bob_bundle = make_bundle(&bob_identity, &bob_spk, Some(&bob_opk));
+        let result = create_session_and_encrypt(
+            &mut alice_store, &bob_addr, &bob_bundle, b"hello",
+        ).await;
+
+        assert!(matches!(result, Err(PackError::UntrustedIdentity(_))));
+    }
+
+    #[tokio::test]
+    async fn test_tofu_rejects_identity_change_on_receive() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let bob_spk = SignedPreKey::generate(1, &bob_identity, 1000);
+        let bob_opk = OneTimePreKey::generate(100);
+
+        let mut alice_store = InMemoryStore::new(alice_identity, 1);
+        let mut bob_store = InMemoryStore::new(bob_identity, 2);
+        bob_store.save_signed_pre_key(1, &bob_spk).await.unwrap();
+        bob_store.save_pre_key(100, &bob_opk).await.unwrap();
+
+        let alice_addr = ProtocolAddress::new("alice".into(), 1);
+        let bob_addr = ProtocolAddress::new("bob".into(), 1);
+
+        let bob_bundle = make_bundle(
+            &IdentityKeyPair::from_keys(
+                bob_store.get_identity_key_pair().await.unwrap().public,
+                crate::crypto::curve::PrivateKey::from_bytes(*bob_store.get_identity_key_pair().await.unwrap().private_key().as_bytes()),
+            ),
+            &bob_store.get_signed_pre_key(1).await.unwrap(),
+            Some(&bob_store.get_pre_key(100).await.unwrap()),
+        );
+
+        // Alice sends message to Bob (establishes TOFU identity for alice_addr on bob_store)
+        let msg = create_session_and_encrypt(
+            &mut alice_store, &bob_addr, &bob_bundle, b"hello bob",
+        ).await.unwrap();
+
+        let pt = process_pre_key_message(
+            &mut bob_store, &bob_addr, &alice_addr, &msg,
+        ).await.unwrap();
+        assert_eq!(pt, b"hello bob");
+
+        // Attacker with different identity tries to impersonate Alice
+        let attacker_identity = IdentityKeyPair::generate();
+        let mut attacker_store = InMemoryStore::new(attacker_identity, 3);
+
+        let bob_opk2 = OneTimePreKey::generate(101);
+        bob_store.save_pre_key(101, &bob_opk2).await.unwrap();
+        let bob_bundle2 = make_bundle(
+            &IdentityKeyPair::from_keys(
+                bob_store.get_identity_key_pair().await.unwrap().public,
+                crate::crypto::curve::PrivateKey::from_bytes(*bob_store.get_identity_key_pair().await.unwrap().private_key().as_bytes()),
+            ),
+            &bob_store.get_signed_pre_key(1).await.unwrap(),
+            Some(&bob_store.get_pre_key(101).await.unwrap()),
+        );
+
+        let evil_msg = create_session_and_encrypt(
+            &mut attacker_store, &bob_addr, &bob_bundle2, b"impersonating alice",
+        ).await.unwrap();
+
+        // Bob rejects because attacker's identity != stored Alice identity
+        let result = process_pre_key_message(
+            &mut bob_store, &bob_addr, &alice_addr, &evil_msg,
+        ).await;
+
+        assert!(matches!(result, Err(PackError::UntrustedIdentity(_))));
+    }
+
+    #[tokio::test]
+    async fn test_tofu_accepts_first_contact() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let bob_spk = SignedPreKey::generate(1, &bob_identity, 1000);
+        let bob_opk = OneTimePreKey::generate(100);
+
+        let mut alice_store = InMemoryStore::new(alice_identity, 1);
+        let mut bob_store = InMemoryStore::new(bob_identity, 2);
+        bob_store.save_signed_pre_key(1, &bob_spk).await.unwrap();
+        bob_store.save_pre_key(100, &bob_opk).await.unwrap();
+
+        let bob_addr = ProtocolAddress::new("bob".into(), 1);
+
+        let bob_bundle = make_bundle(
+            &IdentityKeyPair::from_keys(
+                bob_store.get_identity_key_pair().await.unwrap().public,
+                crate::crypto::curve::PrivateKey::from_bytes(*bob_store.get_identity_key_pair().await.unwrap().private_key().as_bytes()),
+            ),
+            &bob_store.get_signed_pre_key(1).await.unwrap(),
+            Some(&bob_store.get_pre_key(100).await.unwrap()),
+        );
+
+        // First contact should always succeed (no prior identity stored)
+        let result = create_session_and_encrypt(
+            &mut alice_store, &bob_addr, &bob_bundle, b"hello first time",
+        ).await;
+        assert!(result.is_ok());
     }
 }

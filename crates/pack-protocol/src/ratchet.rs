@@ -1,7 +1,9 @@
 // Implements: Double Ratchet Algorithm, Sections 3.1-3.5
 // Source: https://signal.org/docs/specifications/doubleratchet/
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+
+use zeroize::Zeroizing;
 
 use crate::chain::{self, RootKey, ChainKey, MessageKey};
 use crate::crypto::curve::{self, KeyPair, PublicKey};
@@ -9,6 +11,7 @@ use crate::crypto::aead;
 use crate::errors::{Result, PackError};
 
 const MAX_SKIP: u32 = 1000;
+const MAX_TOTAL_SKIPPED: usize = 5000;
 
 /// Message header sent with each encrypted message (spec §3.1).
 #[derive(Clone)]
@@ -47,7 +50,7 @@ impl MessageHeader {
 }
 
 /// Key for looking up skipped message keys: (ratchet public key bytes, message number).
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone, PartialOrd, Ord)]
 struct SkippedKeyId {
     ratchet_key: [u8; 32],
     message_number: u32,
@@ -70,8 +73,10 @@ pub struct RatchetState {
     recv_count: u32,
     /// Number of messages in previous sending chain (PN)
     prev_send_count: u32,
-    /// Skipped message keys (MKSKIPPED)
-    skipped_keys: HashMap<SkippedKeyId, MessageKey>,
+    /// Skipped message keys (MKSKIPPED) with insertion sequence for LRU eviction
+    skipped_keys: BTreeMap<SkippedKeyId, (MessageKey, u64)>,
+    /// Monotonic counter for skipped-key insertion order
+    skipped_seq: u64,
 }
 
 impl RatchetState {
@@ -114,13 +119,17 @@ impl RatchetState {
         out.extend_from_slice(&self.recv_count.to_be_bytes());
         out.extend_from_slice(&self.prev_send_count.to_be_bytes());
 
-        // skipped_keys: count + entries
+        // skipped_keys: count + entries (each: 32 ratchet_key + 4 msg_num + 32 mk + 8 seq)
         out.extend_from_slice(&(self.skipped_keys.len() as u32).to_be_bytes());
-        for (id, mk) in &self.skipped_keys {
+        for (id, (mk, seq)) in &self.skipped_keys {
             out.extend_from_slice(&id.ratchet_key);
             out.extend_from_slice(&id.message_number.to_be_bytes());
             out.extend_from_slice(mk.as_bytes());
+            out.extend_from_slice(&seq.to_be_bytes());
         }
+
+        // skipped_seq counter
+        out.extend_from_slice(&self.skipped_seq.to_be_bytes());
 
         out
     }
@@ -184,7 +193,7 @@ impl RatchetState {
         let sk_count_bytes = read(&mut pos, 4)?;
         let sk_count = u32::from_be_bytes([sk_count_bytes[0], sk_count_bytes[1], sk_count_bytes[2], sk_count_bytes[3]]) as usize;
 
-        let mut skipped_keys = HashMap::new();
+        let mut skipped_keys = BTreeMap::new();
         for _ in 0..sk_count {
             let mut rk_id = [0u8; 32];
             rk_id.copy_from_slice(read(&mut pos, 32)?);
@@ -192,11 +201,22 @@ impl RatchetState {
             let mn = u32::from_be_bytes([mn_bytes[0], mn_bytes[1], mn_bytes[2], mn_bytes[3]]);
             let mut mk = [0u8; 32];
             mk.copy_from_slice(read(&mut pos, 32)?);
+            let seq_bytes = read(&mut pos, 8)?;
+            let seq = u64::from_be_bytes([
+                seq_bytes[0], seq_bytes[1], seq_bytes[2], seq_bytes[3],
+                seq_bytes[4], seq_bytes[5], seq_bytes[6], seq_bytes[7],
+            ]);
             skipped_keys.insert(
                 SkippedKeyId { ratchet_key: rk_id, message_number: mn },
-                MessageKey::from_bytes(mk),
+                (MessageKey::from_bytes(mk), seq),
             );
         }
+
+        let seq_bytes = read(&mut pos, 8)?;
+        let skipped_seq = u64::from_be_bytes([
+            seq_bytes[0], seq_bytes[1], seq_bytes[2], seq_bytes[3],
+            seq_bytes[4], seq_bytes[5], seq_bytes[6], seq_bytes[7],
+        ]);
 
         Ok(RatchetState {
             dh_self,
@@ -208,6 +228,7 @@ impl RatchetState {
             recv_count,
             prev_send_count,
             skipped_keys,
+            skipped_seq,
         })
     }
 }
@@ -217,11 +238,11 @@ impl RatchetState {
 /// Alice knows Bob's signed pre-key (which serves as his initial ratchet public key).
 /// She performs a DH ratchet step immediately to establish the first sending chain.
 pub fn ratchet_init_initiator(
-    shared_secret: [u8; 32],
+    shared_secret: Zeroizing<[u8; 32]>,
     their_ratchet_key: &PublicKey,
 ) -> Result<RatchetState> {
     let dh_self = KeyPair::generate();
-    let root_key = RootKey::from_bytes(shared_secret);
+    let root_key = RootKey::from_bytes(*shared_secret);
 
     // Perform initial DH ratchet step to derive sending chain
     let dh_output = curve::dh(&dh_self.private, their_ratchet_key)?;
@@ -236,7 +257,8 @@ pub fn ratchet_init_initiator(
         receiving_chain: None,
         recv_count: 0,
         prev_send_count: 0,
-        skipped_keys: HashMap::new(),
+        skipped_keys: BTreeMap::new(),
+        skipped_seq: 0,
     })
 }
 
@@ -246,19 +268,20 @@ pub fn ratchet_init_initiator(
 /// He has no sending chain yet — it will be created on the first encrypt
 /// (which triggers a DH ratchet step).
 pub fn ratchet_init_responder(
-    shared_secret: [u8; 32],
+    shared_secret: Zeroizing<[u8; 32]>,
     our_ratchet_keypair: KeyPair,
 ) -> RatchetState {
     RatchetState {
         dh_self: our_ratchet_keypair,
         dh_remote: None,
-        root_key: RootKey::from_bytes(shared_secret),
+        root_key: RootKey::from_bytes(*shared_secret),
         sending_chain: None,
         send_count: 0,
         receiving_chain: None,
         recv_count: 0,
         prev_send_count: 0,
-        skipped_keys: HashMap::new(),
+        skipped_keys: BTreeMap::new(),
+        skipped_seq: 0,
     }
 }
 
@@ -337,7 +360,7 @@ pub fn ratchet_decrypt(
         ratchet_key: *header.ratchet_key.as_bytes(),
         message_number: header.message_number,
     };
-    if let Some(mk) = state.skipped_keys.remove(&skip_id) {
+    if let Some((mk, _seq)) = state.skipped_keys.remove(&skip_id) {
         let header_bytes = header.to_bytes();
         let mut full_ad = Vec::with_capacity(ad.len() + header_bytes.len());
         full_ad.extend_from_slice(ad);
@@ -430,11 +453,24 @@ fn skip_message_keys_current(state: &mut RatchetState, target: u32) -> Result<()
             ratchet_key: *ratchet_key.as_bytes(),
             message_number: state.recv_count,
         };
-        state.skipped_keys.insert(skip_id, mk);
+        state.skipped_keys.insert(skip_id, (mk, state.skipped_seq));
+        state.skipped_seq += 1;
+        evict_oldest_skipped(state);
         state.recv_count += 1;
     }
 
     Ok(())
+}
+
+fn evict_oldest_skipped(state: &mut RatchetState) {
+    while state.skipped_keys.len() > MAX_TOTAL_SKIPPED {
+        let oldest = state.skipped_keys.iter()
+            .min_by_key(|(_, (_, seq))| *seq)
+            .map(|(k, _)| k.clone());
+        if let Some(key) = oldest {
+            state.skipped_keys.remove(&key);
+        }
+    }
 }
 
 /// Skip remaining message keys in a previous receiving chain.
@@ -457,7 +493,9 @@ fn skip_message_keys(state: &mut RatchetState, ratchet_key: PublicKey, target: u
             ratchet_key: *ratchet_key.as_bytes(),
             message_number: state.recv_count,
         };
-        state.skipped_keys.insert(skip_id, mk);
+        state.skipped_keys.insert(skip_id, (mk, state.skipped_seq));
+        state.skipped_seq += 1;
+        evict_oldest_skipped(state);
         state.recv_count += 1;
     }
 
@@ -483,8 +521,8 @@ mod tests {
         let bob_ratchet_kp = KeyPair::generate();
         let bob_ratchet_pub = bob_ratchet_kp.public.clone();
 
-        let alice = ratchet_init_initiator(shared_secret, &bob_ratchet_pub).unwrap();
-        let bob = ratchet_init_responder(shared_secret, bob_ratchet_kp);
+        let alice = ratchet_init_initiator(Zeroizing::new(shared_secret), &bob_ratchet_pub).unwrap();
+        let bob = ratchet_init_responder(Zeroizing::new(shared_secret), bob_ratchet_kp);
 
         (alice, bob)
     }

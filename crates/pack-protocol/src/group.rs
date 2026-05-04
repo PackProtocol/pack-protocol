@@ -84,6 +84,7 @@ impl SenderKeyRecord {
     }
 
     pub fn add_state(&mut self, state: SenderKeyState) {
+        self.states.retain(|s| s.chain_id != state.chain_id);
         self.states.insert(0, state);
         self.states.truncate(MAX_SENDER_KEY_STATES);
     }
@@ -194,8 +195,9 @@ pub fn group_encrypt(
     // Derive nonce from message key + iteration
     let nonce = derive_group_nonce(message_key.as_bytes(), iteration);
 
-    // Encrypt
-    let ciphertext = aead::encrypt(message_key.as_bytes(), &nonce, plaintext, &[])?;
+    // Encrypt with chain_id as associated data to bind ciphertext to this chain
+    let ad = state.chain_id.to_be_bytes();
+    let ciphertext = aead::encrypt(message_key.as_bytes(), &nonce, plaintext, &ad)?;
 
     // Update chain state
     state.chain_key = new_chain_key;
@@ -236,10 +238,12 @@ pub fn group_decrypt(
     // Check skipped keys cache first (for out-of-order messages)
     let state = &mut record.states[state_idx];
 
+    let ad = message.chain_id.to_be_bytes();
+
     if message.iteration < state.iteration {
         if let Some(mk) = state.skipped_keys.remove(&message.iteration) {
             let nonce = derive_group_nonce(mk.as_bytes(), message.iteration);
-            return aead::decrypt(mk.as_bytes(), &nonce, &message.ciphertext, &[]);
+            return aead::decrypt(mk.as_bytes(), &nonce, &message.ciphertext, &ad);
         }
         return Err(PackError::DuplicateMessage);
     }
@@ -272,7 +276,7 @@ pub fn group_decrypt(
     let message_key = target_mk.unwrap();
     let nonce = derive_group_nonce(message_key.as_bytes(), message.iteration);
 
-    let plaintext = aead::decrypt(message_key.as_bytes(), &nonce, &message.ciphertext, &[])?;
+    let plaintext = aead::decrypt(message_key.as_bytes(), &nonce, &message.ciphertext, &ad)?;
 
     // Update state to reflect the advancement
     state.chain_key = current_chain;

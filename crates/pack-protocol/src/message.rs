@@ -39,6 +39,11 @@ impl PackMessage {
             return Err(PackError::InvalidMessage("message too short".into()));
         }
         let version = data[0];
+        if version != 1 {
+            return Err(PackError::InvalidMessage(
+                format!("unsupported message version: {version}"),
+            ));
+        }
         let header_len = u32::from_be_bytes([data[1], data[2], data[3], data[4]]) as usize;
         if data.len() < 5 + header_len {
             return Err(PackError::InvalidMessage("message truncated".into()));
@@ -101,6 +106,11 @@ impl PreKeyPackMessage {
             return Err(PackError::InvalidMessage("pre-key message too short".into()));
         }
         let version = data[0];
+        if version != 1 {
+            return Err(PackError::InvalidMessage(
+                format!("unsupported pre-key message version: {version}"),
+            ));
+        }
         let signed_pre_key_id = u32::from_be_bytes([data[1], data[2], data[3], data[4]]);
         let has_pre_key = data[5];
 
