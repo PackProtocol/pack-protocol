@@ -1,7 +1,8 @@
 use pack_protocol::api;
 use pack_protocol::crypto::curve::{KeyPair, PublicKey, PrivateKey};
+use pack_protocol::fingerprint::ScannableFingerprint;
 use pack_protocol::keys::{
-    IdentityKey, IdentityKeyPair, OneTimePreKey, PreKeyBundle, SignedPreKey,
+    IdentityKey, IdentityKeyPair, OneTimePreKey, PQPreKey, PreKeyBundle, SignedPreKey,
 };
 use pack_protocol::sealed_sender::{SenderCertificate, ServerCertificate};
 
@@ -77,6 +78,15 @@ mod ffi {
         fn decrypt(&mut self, message_bytes: &[u8]) -> Result<Vec<u8>, PackBridgeError>;
         fn pre_key_message(&self) -> Option<Vec<u8>>;
         fn first_plaintext(&self) -> Option<Vec<u8>>;
+        fn to_bytes(&self) -> Vec<u8>;
+
+        #[swift_bridge(associated_to = PackSessionBridge)]
+        fn from_bytes(data: &[u8]) -> Result<PackSessionBridge, PackBridgeError>;
+
+        fn to_bytes_encrypted(&self, storage_key: &[u8]) -> Result<Vec<u8>, PackBridgeError>;
+
+        #[swift_bridge(associated_to = PackSessionBridge)]
+        fn from_bytes_encrypted(data: &[u8], storage_key: &[u8]) -> Result<PackSessionBridge, PackBridgeError>;
     }
 
     extern "Rust" {
@@ -96,6 +106,10 @@ mod ffi {
         fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, PackBridgeError>;
         fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, PackBridgeError>;
         fn distribution_message(&self) -> Option<Vec<u8>>;
+        fn to_bytes(&self) -> Vec<u8>;
+
+        #[swift_bridge(associated_to = PackGroupSessionBridge)]
+        fn from_bytes(data: &[u8]) -> Result<PackGroupSessionBridge, PackBridgeError>;
     }
 
     extern "Rust" {
@@ -124,6 +138,108 @@ mod ffi {
             trust_root: &[u8],
             current_time: u64,
         ) -> Result<SealedSenderDecryptResult, PackBridgeError>;
+
+        #[swift_bridge(associated_to = PackSealedSenderBridge)]
+        fn sealed_encrypt_message(
+            session: &mut PackSessionBridge,
+            sender_uuid: &str,
+            sender_device_id: u32,
+            server_cert_key: &[u8],
+            server_cert_id: u32,
+            cert_expiration: u64,
+            cert_signature: &[u8],
+            plaintext: &[u8],
+            current_time: u64,
+        ) -> Result<Vec<u8>, PackBridgeError>;
+
+        #[swift_bridge(associated_to = PackSealedSenderBridge)]
+        fn sealed_decrypt_message(
+            session: &mut PackSessionBridge,
+            ciphertext: &[u8],
+            trust_root: &[u8],
+            current_time: u64,
+        ) -> Result<SealedSenderDecryptResult, PackBridgeError>;
+    }
+
+    #[swift_bridge(swift_repr = "struct")]
+    struct FingerprintResult {
+        display_text: String,
+        scannable_bytes: Vec<u8>,
+    }
+
+    extern "Rust" {
+        type PackFingerprintBridge;
+
+        #[swift_bridge(associated_to = PackFingerprintBridge)]
+        fn generate(
+            local_identifier: &str,
+            local_identity_key: &[u8],
+            remote_identifier: &str,
+            remote_identity_key: &[u8],
+        ) -> Result<FingerprintResult, PackBridgeError>;
+
+        #[swift_bridge(associated_to = PackFingerprintBridge)]
+        fn generate_for_session(
+            session: &PackSessionBridge,
+            local_identifier: &str,
+            remote_identifier: &str,
+        ) -> FingerprintResult;
+
+        #[swift_bridge(associated_to = PackFingerprintBridge)]
+        fn verify_scanned(
+            local_scannable: &[u8],
+            scanned: &[u8],
+        ) -> Result<bool, PackBridgeError>;
+    }
+
+    #[swift_bridge(swift_repr = "struct")]
+    struct KeyPairResult {
+        public_key: Vec<u8>,
+        private_key: Vec<u8>,
+    }
+
+    #[swift_bridge(swift_repr = "struct")]
+    struct SignedPreKeyResult {
+        id: u32,
+        public_key: Vec<u8>,
+        private_key: Vec<u8>,
+        signature: Vec<u8>,
+        timestamp: u64,
+    }
+
+    #[swift_bridge(swift_repr = "struct")]
+    struct PQPreKeyResult {
+        id: u32,
+        encapsulation_key: Vec<u8>,
+        decapsulation_key: Vec<u8>,
+        signature: Vec<u8>,
+        timestamp: u64,
+    }
+
+    extern "Rust" {
+        type PackKeyGeneratorBridge;
+
+        #[swift_bridge(associated_to = PackKeyGeneratorBridge)]
+        fn generate_identity_key_pair() -> KeyPairResult;
+
+        #[swift_bridge(associated_to = PackKeyGeneratorBridge)]
+        fn generate_signed_pre_key(
+            id: u32,
+            identity_public: &[u8],
+            identity_private: &[u8],
+            timestamp: u64,
+        ) -> Result<SignedPreKeyResult, PackBridgeError>;
+
+        #[swift_bridge(associated_to = PackKeyGeneratorBridge)]
+        fn generate_one_time_pre_key(id: u32) -> KeyPairResult;
+
+        #[swift_bridge(associated_to = PackKeyGeneratorBridge)]
+        fn generate_pq_pre_key(
+            id: u32,
+            identity_public: &[u8],
+            identity_private: &[u8],
+            timestamp: u64,
+        ) -> Result<PQPreKeyResult, PackBridgeError>;
     }
 }
 
@@ -271,6 +387,38 @@ impl PackSessionBridge {
     fn first_plaintext(&self) -> Option<Vec<u8>> {
         self.first_plaintext.clone()
     }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_bytes()
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self, ffi::PackBridgeError> {
+        let session = map_err(api::PackSession::from_bytes(data))?;
+        Ok(Self {
+            inner: session,
+            pre_key_message: None,
+            first_plaintext: None,
+        })
+    }
+
+    fn to_bytes_encrypted(&self, storage_key: &[u8]) -> Result<Vec<u8>, ffi::PackBridgeError> {
+        let key: [u8; 32] = storage_key
+            .try_into()
+            .map_err(|_| ffi::PackBridgeError::InvalidKey("storage key must be 32 bytes".into()))?;
+        map_err(self.inner.to_bytes_encrypted(&key))
+    }
+
+    fn from_bytes_encrypted(data: &[u8], storage_key: &[u8]) -> Result<Self, ffi::PackBridgeError> {
+        let key: [u8; 32] = storage_key
+            .try_into()
+            .map_err(|_| ffi::PackBridgeError::InvalidKey("storage key must be 32 bytes".into()))?;
+        let session = map_err(api::PackSession::from_bytes_encrypted(data, &key))?;
+        Ok(Self {
+            inner: session,
+            pre_key_message: None,
+            first_plaintext: None,
+        })
+    }
 }
 
 // ── PackGroupSession bridge ──
@@ -313,6 +461,18 @@ impl PackGroupSessionBridge {
 
     fn distribution_message(&self) -> Option<Vec<u8>> {
         self.distribution_message.clone()
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_bytes()
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self, ffi::PackBridgeError> {
+        let session = map_err(api::PackGroupSession::from_bytes(data))?;
+        Ok(Self {
+            inner: session,
+            distribution_message: None,
+        })
     }
 }
 
@@ -398,6 +558,128 @@ impl PackSealedSenderBridge {
             sender_device_id: result.sender_device_id,
             plaintext: result.plaintext,
         })
+    }
+
+    fn sealed_encrypt_message(
+        session: &mut PackSessionBridge,
+        sender_uuid: &str,
+        sender_device_id: u32,
+        server_cert_key: &[u8],
+        server_cert_id: u32,
+        cert_expiration: u64,
+        cert_signature: &[u8],
+        plaintext: &[u8],
+        current_time: u64,
+    ) -> Result<Vec<u8>, ffi::PackBridgeError> {
+        let server_pub = PublicKey::from_bytes(
+            server_cert_key
+                .try_into()
+                .map_err(|_| ffi::PackBridgeError::InvalidKey("server cert key must be 32 bytes".into()))?,
+        );
+        let cert = SenderCertificate {
+            sender_uuid: sender_uuid.to_string(),
+            sender_device_id,
+            sender_identity: session.inner.our_identity().clone(),
+            expiration: cert_expiration,
+            server_certificate: ServerCertificate { key: server_pub, id: server_cert_id },
+            signature: cert_signature.to_vec(),
+        };
+
+        map_err(api::PackSealedSender::encrypt_message(
+            &mut session.inner,
+            &cert,
+            plaintext,
+            current_time,
+        ))
+    }
+
+    fn sealed_decrypt_message(
+        session: &mut PackSessionBridge,
+        ciphertext: &[u8],
+        trust_root: &[u8],
+        current_time: u64,
+    ) -> Result<ffi::SealedSenderDecryptResult, ffi::PackBridgeError> {
+        let trust_root_key = PublicKey::from_bytes(
+            trust_root
+                .try_into()
+                .map_err(|_| ffi::PackBridgeError::InvalidKey("trust root must be 32 bytes".into()))?,
+        );
+
+        let result = map_err(api::PackSealedSender::decrypt_message(
+            &mut session.inner,
+            ciphertext,
+            &trust_root_key,
+            current_time,
+        ))?;
+
+        Ok(ffi::SealedSenderDecryptResult {
+            sender_uuid: result.sender_uuid,
+            sender_device_id: result.sender_device_id,
+            plaintext: result.plaintext,
+        })
+    }
+}
+
+// ── PackFingerprint bridge ──
+
+pub struct PackFingerprintBridge;
+
+impl PackFingerprintBridge {
+    fn generate(
+        local_identifier: &str,
+        local_identity_key: &[u8],
+        remote_identifier: &str,
+        remote_identity_key: &[u8],
+    ) -> Result<ffi::FingerprintResult, ffi::PackBridgeError> {
+        let local_ik = IdentityKey::from_bytes(
+            local_identity_key
+                .try_into()
+                .map_err(|_| ffi::PackBridgeError::InvalidKey("local identity key must be 32 bytes".into()))?,
+        ).map_err(|e| ffi::PackBridgeError::InvalidKey(e.to_string()))?;
+
+        let remote_ik = IdentityKey::from_bytes(
+            remote_identity_key
+                .try_into()
+                .map_err(|_| ffi::PackBridgeError::InvalidKey("remote identity key must be 32 bytes".into()))?,
+        ).map_err(|e| ffi::PackBridgeError::InvalidKey(e.to_string()))?;
+
+        let fp = api::PackFingerprint::generate(
+            local_identifier,
+            &local_ik,
+            remote_identifier,
+            &remote_ik,
+        );
+
+        Ok(ffi::FingerprintResult {
+            display_text: fp.displayable.display(),
+            scannable_bytes: fp.scannable.to_bytes(),
+        })
+    }
+
+    fn generate_for_session(
+        session: &PackSessionBridge,
+        local_identifier: &str,
+        remote_identifier: &str,
+    ) -> ffi::FingerprintResult {
+        let fp = api::PackFingerprint::generate_for_session(
+            &session.inner,
+            local_identifier,
+            remote_identifier,
+        );
+
+        ffi::FingerprintResult {
+            display_text: fp.displayable.display(),
+            scannable_bytes: fp.scannable.to_bytes(),
+        }
+    }
+
+    fn verify_scanned(
+        local_scannable: &[u8],
+        scanned: &[u8],
+    ) -> Result<bool, ffi::PackBridgeError> {
+        let local = map_err(ScannableFingerprint::from_bytes(local_scannable))?;
+        let remote = map_err(ScannableFingerprint::from_bytes(scanned))?;
+        map_err(local.verify(&remote))
     }
 }
 
@@ -510,4 +792,60 @@ fn build_one_time_pre_key(
             private: PrivateKey::from_bytes(priv_arr),
         },
     })
+}
+
+// ── PackKeyGenerator bridge ──
+
+pub struct PackKeyGeneratorBridge;
+
+impl PackKeyGeneratorBridge {
+    fn generate_identity_key_pair() -> ffi::KeyPairResult {
+        let ikp = IdentityKeyPair::generate();
+        ffi::KeyPairResult {
+            public_key: ikp.public.as_bytes().to_vec(),
+            private_key: ikp.private_key().as_bytes().to_vec(),
+        }
+    }
+
+    fn generate_signed_pre_key(
+        id: u32,
+        identity_public: &[u8],
+        identity_private: &[u8],
+        timestamp: u64,
+    ) -> Result<ffi::SignedPreKeyResult, ffi::PackBridgeError> {
+        let identity = build_identity_pair(identity_public, identity_private)?;
+        let spk = SignedPreKey::generate(id, &identity, timestamp);
+        Ok(ffi::SignedPreKeyResult {
+            id: spk.id,
+            public_key: spk.key_pair.public.as_bytes().to_vec(),
+            private_key: spk.key_pair.private.as_bytes().to_vec(),
+            signature: spk.signature.to_vec(),
+            timestamp: spk.timestamp,
+        })
+    }
+
+    fn generate_one_time_pre_key(id: u32) -> ffi::KeyPairResult {
+        let opk = OneTimePreKey::generate(id);
+        ffi::KeyPairResult {
+            public_key: opk.key_pair.public.as_bytes().to_vec(),
+            private_key: opk.key_pair.private.as_bytes().to_vec(),
+        }
+    }
+
+    fn generate_pq_pre_key(
+        id: u32,
+        identity_public: &[u8],
+        identity_private: &[u8],
+        timestamp: u64,
+    ) -> Result<ffi::PQPreKeyResult, ffi::PackBridgeError> {
+        let identity = build_identity_pair(identity_public, identity_private)?;
+        let pqpk = PQPreKey::generate(id, &identity, timestamp);
+        Ok(ffi::PQPreKeyResult {
+            id: pqpk.id,
+            encapsulation_key: pqpk.encapsulation_key_bytes(),
+            decapsulation_key: pqpk.decapsulation_key_bytes(),
+            signature: pqpk.signature.to_vec(),
+            timestamp: pqpk.timestamp,
+        })
+    }
 }

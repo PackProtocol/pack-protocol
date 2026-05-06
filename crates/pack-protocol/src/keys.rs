@@ -209,6 +209,11 @@ impl PQPreKey {
         use ml_kem::kem::KeyExport;
         self.encapsulation_key.to_bytes().to_vec()
     }
+
+    pub fn decapsulation_key_bytes(&self) -> Vec<u8> {
+        use ml_kem::kem::KeyExport;
+        self.decapsulation_key.to_bytes().to_vec()
+    }
 }
 
 /// Pre-key bundle extended with a post-quantum KEM key for PQXDH.

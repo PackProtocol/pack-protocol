@@ -173,6 +173,14 @@ extension PackSessionBridge {
         })
         })
     }
+
+    class public func from_bytes(_ data: UnsafeBufferPointer<UInt8>) throws -> PackSessionBridge {
+        try { let val = __swift_bridge__$PackSessionBridge$from_bytes(data.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultPackSessionBridgeAndPackBridgeError$ResultOk: return PackSessionBridge(ptr: val.payload.ok) case __swift_bridge__$ResultPackSessionBridgeAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
+    }
+
+    class public func from_bytes_encrypted(_ data: UnsafeBufferPointer<UInt8>, _ storage_key: UnsafeBufferPointer<UInt8>) throws -> PackSessionBridge {
+        try { let val = __swift_bridge__$PackSessionBridge$from_bytes_encrypted(data.toFfiSlice(), storage_key.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultPackSessionBridgeAndPackBridgeError$ResultOk: return PackSessionBridge(ptr: val.payload.ok) case __swift_bridge__$ResultPackSessionBridgeAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
+    }
 }
 public class PackSessionBridgeRefMut: PackSessionBridgeRef {
     public override init(ptr: UnsafeMutableRawPointer) {
@@ -202,6 +210,14 @@ extension PackSessionBridgeRef {
 
     public func first_plaintext() -> Optional<RustVec<UInt8>> {
         { let val = __swift_bridge__$PackSessionBridge$first_plaintext(ptr); if val != nil { return RustVec(ptr: val!) } else { return nil } }()
+    }
+
+    public func to_bytes() -> RustVec<UInt8> {
+        RustVec(ptr: __swift_bridge__$PackSessionBridge$to_bytes(ptr))
+    }
+
+    public func to_bytes_encrypted(_ storage_key: UnsafeBufferPointer<UInt8>) throws -> RustVec<UInt8> {
+        try { let val = __swift_bridge__$PackSessionBridge$to_bytes_encrypted(ptr, storage_key.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
     }
 }
 extension PackSessionBridge: Vectorizable {
@@ -279,6 +295,10 @@ extension PackGroupSessionBridge {
             try { let val = __swift_bridge__$PackGroupSessionBridge$create_receiver(distribution_idAsRustStr, distribution_message.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError$ResultOk: return PackGroupSessionBridge(ptr: val.payload.ok) case __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
         })
     }
+
+    class public func from_bytes(_ data: UnsafeBufferPointer<UInt8>) throws -> PackGroupSessionBridge {
+        try { let val = __swift_bridge__$PackGroupSessionBridge$from_bytes(data.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError$ResultOk: return PackGroupSessionBridge(ptr: val.payload.ok) case __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
+    }
 }
 public class PackGroupSessionBridgeRefMut: PackGroupSessionBridgeRef {
     public override init(ptr: UnsafeMutableRawPointer) {
@@ -304,6 +324,10 @@ public class PackGroupSessionBridgeRef {
 extension PackGroupSessionBridgeRef {
     public func distribution_message() -> Optional<RustVec<UInt8>> {
         { let val = __swift_bridge__$PackGroupSessionBridge$distribution_message(ptr); if val != nil { return RustVec(ptr: val!) } else { return nil } }()
+    }
+
+    public func to_bytes() -> RustVec<UInt8> {
+        RustVec(ptr: __swift_bridge__$PackGroupSessionBridge$to_bytes(ptr))
     }
 }
 extension PackGroupSessionBridge: Vectorizable {
@@ -379,6 +403,16 @@ extension PackSealedSenderBridge {
     class public func sealed_decrypt(_ our_identity_public: UnsafeBufferPointer<UInt8>, _ our_identity_private: UnsafeBufferPointer<UInt8>, _ ciphertext: UnsafeBufferPointer<UInt8>, _ trust_root: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> SealedSenderDecryptResult {
         try { let val = __swift_bridge__$PackSealedSenderBridge$sealed_decrypt(our_identity_public.toFfiSlice(), our_identity_private.toFfiSlice(), ciphertext.toFfiSlice(), trust_root.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultSealedSenderDecryptResultAndPackBridgeError$ResultOk: return val.payload.ok.intoSwiftRepr() case __swift_bridge__$ResultSealedSenderDecryptResultAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
     }
+
+    class public func sealed_encrypt_message<GenericToRustStr: ToRustStr>(_ session: PackSessionBridgeRefMut, _ sender_uuid: GenericToRustStr, _ sender_device_id: UInt32, _ server_cert_key: UnsafeBufferPointer<UInt8>, _ server_cert_id: UInt32, _ cert_expiration: UInt64, _ cert_signature: UnsafeBufferPointer<UInt8>, _ plaintext: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> RustVec<UInt8> {
+        return sender_uuid.toRustStr({ sender_uuidAsRustStr in
+            try { let val = __swift_bridge__$PackSealedSenderBridge$sealed_encrypt_message(session.ptr, sender_uuidAsRustStr, sender_device_id, server_cert_key.toFfiSlice(), server_cert_id, cert_expiration, cert_signature.toFfiSlice(), plaintext.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
+        })
+    }
+
+    class public func sealed_decrypt_message(_ session: PackSessionBridgeRefMut, _ ciphertext: UnsafeBufferPointer<UInt8>, _ trust_root: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> SealedSenderDecryptResult {
+        try { let val = __swift_bridge__$PackSealedSenderBridge$sealed_decrypt_message(session.ptr, ciphertext.toFfiSlice(), trust_root.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultSealedSenderDecryptResultAndPackBridgeError$ResultOk: return val.payload.ok.intoSwiftRepr() case __swift_bridge__$ResultSealedSenderDecryptResultAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
+    }
 }
 public class PackSealedSenderBridgeRefMut: PackSealedSenderBridgeRef {
     public override init(ptr: UnsafeMutableRawPointer) {
@@ -438,6 +472,363 @@ extension PackSealedSenderBridge: Vectorizable {
 
     public static func vecOfSelfLen(vecPtr: UnsafeMutableRawPointer) -> UInt {
         __swift_bridge__$Vec_PackSealedSenderBridge$len(vecPtr)
+    }
+}
+
+public struct FingerprintResult {
+    public var display_text: RustString
+    public var scannable_bytes: RustVec<UInt8>
+
+    public init(display_text: RustString,scannable_bytes: RustVec<UInt8>) {
+        self.display_text = display_text
+        self.scannable_bytes = scannable_bytes
+    }
+
+    @inline(__always)
+    func intoFfiRepr() -> __swift_bridge__$FingerprintResult {
+        { let val = self; return __swift_bridge__$FingerprintResult(display_text: { let rustString = val.display_text.intoRustString(); rustString.isOwned = false; return rustString.ptr }(), scannable_bytes: { let val = val.scannable_bytes; val.isOwned = false; return val.ptr }()); }()
+    }
+}
+extension __swift_bridge__$FingerprintResult {
+    @inline(__always)
+    func intoSwiftRepr() -> FingerprintResult {
+        { let val = self; return FingerprintResult(display_text: RustString(ptr: val.display_text), scannable_bytes: RustVec(ptr: val.scannable_bytes)); }()
+    }
+}
+extension __swift_bridge__$Option$FingerprintResult {
+    @inline(__always)
+    func intoSwiftRepr() -> Optional<FingerprintResult> {
+        if self.is_some {
+            return self.val.intoSwiftRepr()
+        } else {
+            return nil
+        }
+    }
+
+    @inline(__always)
+    static func fromSwiftRepr(_ val: Optional<FingerprintResult>) -> __swift_bridge__$Option$FingerprintResult {
+        if let v = val {
+            return __swift_bridge__$Option$FingerprintResult(is_some: true, val: v.intoFfiRepr())
+        } else {
+            return __swift_bridge__$Option$FingerprintResult(is_some: false, val: __swift_bridge__$FingerprintResult())
+        }
+    }
+}
+
+public class PackFingerprintBridge: PackFingerprintBridgeRefMut {
+    var isOwned: Bool = true
+
+    public override init(ptr: UnsafeMutableRawPointer) {
+        super.init(ptr: ptr)
+    }
+
+    deinit {
+        if isOwned {
+            __swift_bridge__$PackFingerprintBridge$_free(ptr)
+        }
+    }
+}
+extension PackFingerprintBridge {
+    class public func generate<GenericToRustStr: ToRustStr>(_ local_identifier: GenericToRustStr, _ local_identity_key: UnsafeBufferPointer<UInt8>, _ remote_identifier: GenericToRustStr, _ remote_identity_key: UnsafeBufferPointer<UInt8>) throws -> FingerprintResult {
+        return remote_identifier.toRustStr({ remote_identifierAsRustStr in
+            return local_identifier.toRustStr({ local_identifierAsRustStr in
+            try { let val = __swift_bridge__$PackFingerprintBridge$generate(local_identifierAsRustStr, local_identity_key.toFfiSlice(), remote_identifierAsRustStr, remote_identity_key.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultFingerprintResultAndPackBridgeError$ResultOk: return val.payload.ok.intoSwiftRepr() case __swift_bridge__$ResultFingerprintResultAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
+        })
+        })
+    }
+
+    class public func generate_for_session<GenericToRustStr: ToRustStr>(_ session: PackSessionBridgeRef, _ local_identifier: GenericToRustStr, _ remote_identifier: GenericToRustStr) -> FingerprintResult {
+        return remote_identifier.toRustStr({ remote_identifierAsRustStr in
+            return local_identifier.toRustStr({ local_identifierAsRustStr in
+            __swift_bridge__$PackFingerprintBridge$generate_for_session(session.ptr, local_identifierAsRustStr, remote_identifierAsRustStr).intoSwiftRepr()
+        })
+        })
+    }
+
+    class public func verify_scanned(_ local_scannable: UnsafeBufferPointer<UInt8>, _ scanned: UnsafeBufferPointer<UInt8>) throws -> Bool {
+        try { let val = __swift_bridge__$PackFingerprintBridge$verify_scanned(local_scannable.toFfiSlice(), scanned.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultBoolAndPackBridgeError$ResultOk: return val.payload.ok case __swift_bridge__$ResultBoolAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
+    }
+}
+public class PackFingerprintBridgeRefMut: PackFingerprintBridgeRef {
+    public override init(ptr: UnsafeMutableRawPointer) {
+        super.init(ptr: ptr)
+    }
+}
+public class PackFingerprintBridgeRef {
+    var ptr: UnsafeMutableRawPointer
+
+    public init(ptr: UnsafeMutableRawPointer) {
+        self.ptr = ptr
+    }
+}
+extension PackFingerprintBridge: Vectorizable {
+    public static func vecOfSelfNew() -> UnsafeMutableRawPointer {
+        __swift_bridge__$Vec_PackFingerprintBridge$new()
+    }
+
+    public static func vecOfSelfFree(vecPtr: UnsafeMutableRawPointer) {
+        __swift_bridge__$Vec_PackFingerprintBridge$drop(vecPtr)
+    }
+
+    public static func vecOfSelfPush(vecPtr: UnsafeMutableRawPointer, value: PackFingerprintBridge) {
+        __swift_bridge__$Vec_PackFingerprintBridge$push(vecPtr, {value.isOwned = false; return value.ptr;}())
+    }
+
+    public static func vecOfSelfPop(vecPtr: UnsafeMutableRawPointer) -> Optional<Self> {
+        let pointer = __swift_bridge__$Vec_PackFingerprintBridge$pop(vecPtr)
+        if pointer == nil {
+            return nil
+        } else {
+            return (PackFingerprintBridge(ptr: pointer!) as! Self)
+        }
+    }
+
+    public static func vecOfSelfGet(vecPtr: UnsafeMutableRawPointer, index: UInt) -> Optional<PackFingerprintBridgeRef> {
+        let pointer = __swift_bridge__$Vec_PackFingerprintBridge$get(vecPtr, index)
+        if pointer == nil {
+            return nil
+        } else {
+            return PackFingerprintBridgeRef(ptr: pointer!)
+        }
+    }
+
+    public static func vecOfSelfGetMut(vecPtr: UnsafeMutableRawPointer, index: UInt) -> Optional<PackFingerprintBridgeRefMut> {
+        let pointer = __swift_bridge__$Vec_PackFingerprintBridge$get_mut(vecPtr, index)
+        if pointer == nil {
+            return nil
+        } else {
+            return PackFingerprintBridgeRefMut(ptr: pointer!)
+        }
+    }
+
+    public static func vecOfSelfAsPtr(vecPtr: UnsafeMutableRawPointer) -> UnsafePointer<PackFingerprintBridgeRef> {
+        UnsafePointer<PackFingerprintBridgeRef>(OpaquePointer(__swift_bridge__$Vec_PackFingerprintBridge$as_ptr(vecPtr)))
+    }
+
+    public static func vecOfSelfLen(vecPtr: UnsafeMutableRawPointer) -> UInt {
+        __swift_bridge__$Vec_PackFingerprintBridge$len(vecPtr)
+    }
+}
+
+public struct KeyPairResult {
+    public var public_key: RustVec<UInt8>
+    public var private_key: RustVec<UInt8>
+
+    public init(public_key: RustVec<UInt8>,private_key: RustVec<UInt8>) {
+        self.public_key = public_key
+        self.private_key = private_key
+    }
+
+    @inline(__always)
+    func intoFfiRepr() -> __swift_bridge__$KeyPairResult {
+        { let val = self; return __swift_bridge__$KeyPairResult(public_key: { let val = val.public_key; val.isOwned = false; return val.ptr }(), private_key: { let val = val.private_key; val.isOwned = false; return val.ptr }()); }()
+    }
+}
+extension __swift_bridge__$KeyPairResult {
+    @inline(__always)
+    func intoSwiftRepr() -> KeyPairResult {
+        { let val = self; return KeyPairResult(public_key: RustVec(ptr: val.public_key), private_key: RustVec(ptr: val.private_key)); }()
+    }
+}
+extension __swift_bridge__$Option$KeyPairResult {
+    @inline(__always)
+    func intoSwiftRepr() -> Optional<KeyPairResult> {
+        if self.is_some {
+            return self.val.intoSwiftRepr()
+        } else {
+            return nil
+        }
+    }
+
+    @inline(__always)
+    static func fromSwiftRepr(_ val: Optional<KeyPairResult>) -> __swift_bridge__$Option$KeyPairResult {
+        if let v = val {
+            return __swift_bridge__$Option$KeyPairResult(is_some: true, val: v.intoFfiRepr())
+        } else {
+            return __swift_bridge__$Option$KeyPairResult(is_some: false, val: __swift_bridge__$KeyPairResult())
+        }
+    }
+}
+public struct SignedPreKeyResult {
+    public var id: UInt32
+    public var public_key: RustVec<UInt8>
+    public var private_key: RustVec<UInt8>
+    public var signature: RustVec<UInt8>
+    public var timestamp: UInt64
+
+    public init(id: UInt32,public_key: RustVec<UInt8>,private_key: RustVec<UInt8>,signature: RustVec<UInt8>,timestamp: UInt64) {
+        self.id = id
+        self.public_key = public_key
+        self.private_key = private_key
+        self.signature = signature
+        self.timestamp = timestamp
+    }
+
+    @inline(__always)
+    func intoFfiRepr() -> __swift_bridge__$SignedPreKeyResult {
+        { let val = self; return __swift_bridge__$SignedPreKeyResult(id: val.id, public_key: { let val = val.public_key; val.isOwned = false; return val.ptr }(), private_key: { let val = val.private_key; val.isOwned = false; return val.ptr }(), signature: { let val = val.signature; val.isOwned = false; return val.ptr }(), timestamp: val.timestamp); }()
+    }
+}
+extension __swift_bridge__$SignedPreKeyResult {
+    @inline(__always)
+    func intoSwiftRepr() -> SignedPreKeyResult {
+        { let val = self; return SignedPreKeyResult(id: val.id, public_key: RustVec(ptr: val.public_key), private_key: RustVec(ptr: val.private_key), signature: RustVec(ptr: val.signature), timestamp: val.timestamp); }()
+    }
+}
+extension __swift_bridge__$Option$SignedPreKeyResult {
+    @inline(__always)
+    func intoSwiftRepr() -> Optional<SignedPreKeyResult> {
+        if self.is_some {
+            return self.val.intoSwiftRepr()
+        } else {
+            return nil
+        }
+    }
+
+    @inline(__always)
+    static func fromSwiftRepr(_ val: Optional<SignedPreKeyResult>) -> __swift_bridge__$Option$SignedPreKeyResult {
+        if let v = val {
+            return __swift_bridge__$Option$SignedPreKeyResult(is_some: true, val: v.intoFfiRepr())
+        } else {
+            return __swift_bridge__$Option$SignedPreKeyResult(is_some: false, val: __swift_bridge__$SignedPreKeyResult())
+        }
+    }
+}
+public struct PQPreKeyResult {
+    public var id: UInt32
+    public var encapsulation_key: RustVec<UInt8>
+    public var decapsulation_key: RustVec<UInt8>
+    public var signature: RustVec<UInt8>
+    public var timestamp: UInt64
+
+    public init(id: UInt32,encapsulation_key: RustVec<UInt8>,decapsulation_key: RustVec<UInt8>,signature: RustVec<UInt8>,timestamp: UInt64) {
+        self.id = id
+        self.encapsulation_key = encapsulation_key
+        self.decapsulation_key = decapsulation_key
+        self.signature = signature
+        self.timestamp = timestamp
+    }
+
+    @inline(__always)
+    func intoFfiRepr() -> __swift_bridge__$PQPreKeyResult {
+        { let val = self; return __swift_bridge__$PQPreKeyResult(id: val.id, encapsulation_key: { let val = val.encapsulation_key; val.isOwned = false; return val.ptr }(), decapsulation_key: { let val = val.decapsulation_key; val.isOwned = false; return val.ptr }(), signature: { let val = val.signature; val.isOwned = false; return val.ptr }(), timestamp: val.timestamp); }()
+    }
+}
+extension __swift_bridge__$PQPreKeyResult {
+    @inline(__always)
+    func intoSwiftRepr() -> PQPreKeyResult {
+        { let val = self; return PQPreKeyResult(id: val.id, encapsulation_key: RustVec(ptr: val.encapsulation_key), decapsulation_key: RustVec(ptr: val.decapsulation_key), signature: RustVec(ptr: val.signature), timestamp: val.timestamp); }()
+    }
+}
+extension __swift_bridge__$Option$PQPreKeyResult {
+    @inline(__always)
+    func intoSwiftRepr() -> Optional<PQPreKeyResult> {
+        if self.is_some {
+            return self.val.intoSwiftRepr()
+        } else {
+            return nil
+        }
+    }
+
+    @inline(__always)
+    static func fromSwiftRepr(_ val: Optional<PQPreKeyResult>) -> __swift_bridge__$Option$PQPreKeyResult {
+        if let v = val {
+            return __swift_bridge__$Option$PQPreKeyResult(is_some: true, val: v.intoFfiRepr())
+        } else {
+            return __swift_bridge__$Option$PQPreKeyResult(is_some: false, val: __swift_bridge__$PQPreKeyResult())
+        }
+    }
+}
+
+public class PackKeyGeneratorBridge: PackKeyGeneratorBridgeRefMut {
+    var isOwned: Bool = true
+
+    public override init(ptr: UnsafeMutableRawPointer) {
+        super.init(ptr: ptr)
+    }
+
+    deinit {
+        if isOwned {
+            __swift_bridge__$PackKeyGeneratorBridge$_free(ptr)
+        }
+    }
+}
+extension PackKeyGeneratorBridge {
+    class public func generate_signed_pre_key(_ id: UInt32, _ identity_public: UnsafeBufferPointer<UInt8>, _ identity_private: UnsafeBufferPointer<UInt8>, _ timestamp: UInt64) throws -> SignedPreKeyResult {
+        try { let val = __swift_bridge__$PackKeyGeneratorBridge$generate_signed_pre_key(id, identity_public.toFfiSlice(), identity_private.toFfiSlice(), timestamp); switch val.tag { case __swift_bridge__$ResultSignedPreKeyResultAndPackBridgeError$ResultOk: return val.payload.ok.intoSwiftRepr() case __swift_bridge__$ResultSignedPreKeyResultAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
+    }
+
+    class public func generate_one_time_pre_key(_ id: UInt32) -> KeyPairResult {
+        __swift_bridge__$PackKeyGeneratorBridge$generate_one_time_pre_key(id).intoSwiftRepr()
+    }
+
+    class public func generate_pq_pre_key(_ id: UInt32, _ identity_public: UnsafeBufferPointer<UInt8>, _ identity_private: UnsafeBufferPointer<UInt8>, _ timestamp: UInt64) throws -> PQPreKeyResult {
+        try { let val = __swift_bridge__$PackKeyGeneratorBridge$generate_pq_pre_key(id, identity_public.toFfiSlice(), identity_private.toFfiSlice(), timestamp); switch val.tag { case __swift_bridge__$ResultPQPreKeyResultAndPackBridgeError$ResultOk: return val.payload.ok.intoSwiftRepr() case __swift_bridge__$ResultPQPreKeyResultAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
+    }
+}
+public class PackKeyGeneratorBridgeRefMut: PackKeyGeneratorBridgeRef {
+    public override init(ptr: UnsafeMutableRawPointer) {
+        super.init(ptr: ptr)
+    }
+}
+public class PackKeyGeneratorBridgeRef {
+    var ptr: UnsafeMutableRawPointer
+
+    public init(ptr: UnsafeMutableRawPointer) {
+        self.ptr = ptr
+    }
+}
+extension PackKeyGeneratorBridgeRef {
+    class public func generate_identity_key_pair() -> KeyPairResult {
+        __swift_bridge__$PackKeyGeneratorBridge$generate_identity_key_pair().intoSwiftRepr()
+    }
+}
+extension PackKeyGeneratorBridge: Vectorizable {
+    public static func vecOfSelfNew() -> UnsafeMutableRawPointer {
+        __swift_bridge__$Vec_PackKeyGeneratorBridge$new()
+    }
+
+    public static func vecOfSelfFree(vecPtr: UnsafeMutableRawPointer) {
+        __swift_bridge__$Vec_PackKeyGeneratorBridge$drop(vecPtr)
+    }
+
+    public static func vecOfSelfPush(vecPtr: UnsafeMutableRawPointer, value: PackKeyGeneratorBridge) {
+        __swift_bridge__$Vec_PackKeyGeneratorBridge$push(vecPtr, {value.isOwned = false; return value.ptr;}())
+    }
+
+    public static func vecOfSelfPop(vecPtr: UnsafeMutableRawPointer) -> Optional<Self> {
+        let pointer = __swift_bridge__$Vec_PackKeyGeneratorBridge$pop(vecPtr)
+        if pointer == nil {
+            return nil
+        } else {
+            return (PackKeyGeneratorBridge(ptr: pointer!) as! Self)
+        }
+    }
+
+    public static func vecOfSelfGet(vecPtr: UnsafeMutableRawPointer, index: UInt) -> Optional<PackKeyGeneratorBridgeRef> {
+        let pointer = __swift_bridge__$Vec_PackKeyGeneratorBridge$get(vecPtr, index)
+        if pointer == nil {
+            return nil
+        } else {
+            return PackKeyGeneratorBridgeRef(ptr: pointer!)
+        }
+    }
+
+    public static func vecOfSelfGetMut(vecPtr: UnsafeMutableRawPointer, index: UInt) -> Optional<PackKeyGeneratorBridgeRefMut> {
+        let pointer = __swift_bridge__$Vec_PackKeyGeneratorBridge$get_mut(vecPtr, index)
+        if pointer == nil {
+            return nil
+        } else {
+            return PackKeyGeneratorBridgeRefMut(ptr: pointer!)
+        }
+    }
+
+    public static func vecOfSelfAsPtr(vecPtr: UnsafeMutableRawPointer) -> UnsafePointer<PackKeyGeneratorBridgeRef> {
+        UnsafePointer<PackKeyGeneratorBridgeRef>(OpaquePointer(__swift_bridge__$Vec_PackKeyGeneratorBridge$as_ptr(vecPtr)))
+    }
+
+    public static func vecOfSelfLen(vecPtr: UnsafeMutableRawPointer) -> UInt {
+        __swift_bridge__$Vec_PackKeyGeneratorBridge$len(vecPtr)
     }
 }
 

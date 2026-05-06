@@ -63,6 +63,8 @@ pub struct PreKeyPackMessage {
     pub base_key: PublicKey,
     pub identity_key: IdentityKey,
     pub message: PackMessage,
+    pub pq_pre_key_id: Option<u32>,
+    pub kem_ciphertext: Option<Vec<u8>>,
 }
 
 impl PreKeyPackMessage {
@@ -80,7 +82,34 @@ impl PreKeyPackMessage {
             base_key,
             identity_key,
             message,
+            pq_pre_key_id: None,
+            kem_ciphertext: None,
         }
+    }
+
+    pub fn new_pqxdh(
+        signed_pre_key_id: u32,
+        pre_key_id: Option<u32>,
+        base_key: PublicKey,
+        identity_key: IdentityKey,
+        message: PackMessage,
+        pq_pre_key_id: u32,
+        kem_ciphertext: Vec<u8>,
+    ) -> Self {
+        Self {
+            version: 2,
+            signed_pre_key_id,
+            pre_key_id,
+            base_key,
+            identity_key,
+            message,
+            pq_pre_key_id: Some(pq_pre_key_id),
+            kem_ciphertext: Some(kem_ciphertext),
+        }
+    }
+
+    pub fn is_pqxdh(&self) -> bool {
+        self.version == 2
     }
 
     pub fn serialize(&self) -> Vec<u8> {
@@ -98,6 +127,14 @@ impl PreKeyPackMessage {
         out.extend_from_slice(self.identity_key.as_bytes());
         out.extend_from_slice(&(inner.len() as u32).to_be_bytes());
         out.extend_from_slice(&inner);
+
+        if self.version >= 2 {
+            if let (Some(pq_id), Some(ref kem_ct)) = (self.pq_pre_key_id, &self.kem_ciphertext) {
+                out.extend_from_slice(&pq_id.to_be_bytes());
+                out.extend_from_slice(&(kem_ct.len() as u32).to_be_bytes());
+                out.extend_from_slice(kem_ct);
+            }
+        }
         out
     }
 
@@ -106,7 +143,7 @@ impl PreKeyPackMessage {
             return Err(PackError::InvalidMessage("pre-key message too short".into()));
         }
         let version = data[0];
-        if version != 1 {
+        if version < 1 || version > 2 {
             return Err(PackError::InvalidMessage(
                 format!("unsupported pre-key message version: {version}"),
             ));
@@ -144,6 +181,23 @@ impl PreKeyPackMessage {
             return Err(PackError::InvalidMessage("pre-key message inner truncated".into()));
         }
         let message = PackMessage::deserialize(&data[offset..offset + inner_len])?;
+        offset += inner_len;
+
+        let (pq_pre_key_id, kem_ciphertext) = if version >= 2 && data.len() > offset {
+            if data.len() < offset + 4 + 4 {
+                return Err(PackError::InvalidMessage("pqxdh fields truncated".into()));
+            }
+            let pq_id = u32::from_be_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]);
+            offset += 4;
+            let kem_len = u32::from_be_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]) as usize;
+            offset += 4;
+            if data.len() < offset + kem_len {
+                return Err(PackError::InvalidMessage("kem ciphertext truncated".into()));
+            }
+            (Some(pq_id), Some(data[offset..offset+kem_len].to_vec()))
+        } else {
+            (None, None)
+        };
 
         Ok(Self {
             version,
@@ -152,6 +206,8 @@ impl PreKeyPackMessage {
             base_key: PublicKey::from_bytes_validated(base_key_bytes)?,
             identity_key: IdentityKey::from_bytes(identity_key_bytes)?,
             message,
+            pq_pre_key_id,
+            kem_ciphertext,
         })
     }
 }
