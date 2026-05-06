@@ -5,6 +5,7 @@
 // classes define native methods that map to these.
 
 mod convert;
+mod api_jni;
 
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass};

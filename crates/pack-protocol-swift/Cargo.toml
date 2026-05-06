@@ -1,0 +1,14 @@
+[package]
+name = "pack-protocol-swift"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+pack-protocol = { path = "../pack-protocol" }
+swift-bridge = { path = "/home/fred/Projects/swift-bridge" }
+
+[build-dependencies]
+swift-bridge-build = { path = "/home/fred/Projects/swift-bridge/crates/swift-bridge-build" }

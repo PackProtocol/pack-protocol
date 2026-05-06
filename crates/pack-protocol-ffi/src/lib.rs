@@ -11,3 +11,4 @@ mod fingerprint_ffi;
 mod group_ffi;
 mod sealed_sender_ffi;
 mod session_ffi;
+mod api_ffi;
