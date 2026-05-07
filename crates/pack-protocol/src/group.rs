@@ -603,7 +603,6 @@ mod tests {
         let _ = dist_msg; // used above
     }
 
-<<<<<<< HEAD
     #[test]
     fn test_sender_key_record_serialization_roundtrip() {
         let mut sender_record = SenderKeyRecord::new();
@@ -642,6 +641,4 @@ mod tests {
         let d5 = group_decrypt(&mut restored, &e5).unwrap();
         assert_eq!(d5, b"msg5");
     }
-=======
->>>>>>> security-audit
 }
