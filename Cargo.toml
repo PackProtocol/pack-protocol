@@ -4,6 +4,7 @@ members = [
     "crates/pack-protocol",
     "crates/pack-protocol-ffi",
     "crates/pack-protocol-jni",
+    "crates/pack-protocol-swift",
     "xtask",
 ]
 

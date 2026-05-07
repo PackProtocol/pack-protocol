@@ -129,4 +129,5 @@ mod tests {
         let decrypted = decrypt(&key, &nonce, &ciphertext, b"").unwrap();
         assert_eq!(decrypted, b"data");
     }
+
 }

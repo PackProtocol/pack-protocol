@@ -272,4 +272,105 @@ enum PackFfiError pack_session_process_pre_key_message(const struct PackSessionS
                                                        uintptr_t buf_len,
                                                        uintptr_t *out_len);
 
+enum PackFfiError pack_session_initiate(const uint8_t *our_name,
+                                        uintptr_t our_name_len,
+                                        uint32_t our_device_id,
+                                        const IdentityKeyPair *our_identity,
+                                        uint32_t registration_id,
+                                        const uint8_t *remote_name,
+                                        uintptr_t remote_name_len,
+                                        uint32_t remote_device_id,
+                                        const PreKeyBundle *bundle,
+                                        const uint8_t *first_message,
+                                        uintptr_t first_message_len,
+                                        PackSession **out_session,
+                                        uint8_t *out_msg_buf,
+                                        uintptr_t msg_buf_len,
+                                        uintptr_t *out_msg_len);
+
+enum PackFfiError pack_session_respond(const uint8_t *our_name,
+                                       uintptr_t our_name_len,
+                                       uint32_t our_device_id,
+                                       const IdentityKeyPair *our_identity,
+                                       uint32_t registration_id,
+                                       const uint8_t *remote_name,
+                                       uintptr_t remote_name_len,
+                                       uint32_t remote_device_id,
+                                       const SignedPreKey *signed_pre_key,
+                                       const OneTimePreKey *one_time_pre_key,
+                                       const uint8_t *pre_key_message,
+                                       uintptr_t pre_key_message_len,
+                                       PackSession **out_session,
+                                       uint8_t *out_pt_buf,
+                                       uintptr_t pt_buf_len,
+                                       uintptr_t *out_pt_len);
+
+void pack_session_destroy(PackSession *handle);
+
+enum PackFfiError pack_session_encrypt_msg(PackSession *handle,
+                                           const uint8_t *plaintext,
+                                           uintptr_t plaintext_len,
+                                           uint8_t *out_buf,
+                                           uintptr_t buf_len,
+                                           uintptr_t *out_len);
+
+enum PackFfiError pack_session_decrypt_msg(PackSession *handle,
+                                           const uint8_t *ciphertext,
+                                           uintptr_t ciphertext_len,
+                                           uint8_t *out_buf,
+                                           uintptr_t buf_len,
+                                           uintptr_t *out_len);
+
+enum PackFfiError pack_group_session_create_sender(const uint8_t *distribution_id,
+                                                   uintptr_t distribution_id_len,
+                                                   PackGroupSession **out_session,
+                                                   uint8_t *out_dist_buf,
+                                                   uintptr_t dist_buf_len,
+                                                   uintptr_t *out_dist_len);
+
+enum PackFfiError pack_group_session_create_receiver(const uint8_t *distribution_id,
+                                                     uintptr_t distribution_id_len,
+                                                     const uint8_t *distribution_message,
+                                                     uintptr_t distribution_message_len,
+                                                     PackGroupSession **out_session);
+
+void pack_group_session_destroy(PackGroupSession *handle);
+
+enum PackFfiError pack_group_session_encrypt(PackGroupSession *handle,
+                                             const uint8_t *plaintext,
+                                             uintptr_t plaintext_len,
+                                             uint8_t *out_buf,
+                                             uintptr_t buf_len,
+                                             uintptr_t *out_len);
+
+enum PackFfiError pack_group_session_decrypt(PackGroupSession *handle,
+                                             const uint8_t *ciphertext,
+                                             uintptr_t ciphertext_len,
+                                             uint8_t *out_buf,
+                                             uintptr_t buf_len,
+                                             uintptr_t *out_len);
+
+enum PackFfiError pack_sealed_sender_encrypt_msg(const IdentityKeyPair *sender_identity,
+                                                 const uint8_t *sender_cert_data,
+                                                 uintptr_t sender_cert_len,
+                                                 const uint8_t *recipient_key_data,
+                                                 uint64_t current_time,
+                                                 const uint8_t *inner_message,
+                                                 uintptr_t inner_message_len,
+                                                 uint8_t *out_buf,
+                                                 uintptr_t buf_len,
+                                                 uintptr_t *out_len);
+
+enum PackFfiError pack_sealed_sender_decrypt_msg(const IdentityKeyPair *our_identity,
+                                                 const uint8_t *ciphertext,
+                                                 uintptr_t ciphertext_len,
+                                                 const uint8_t *trust_root_data,
+                                                 uint64_t current_time,
+                                                 uint8_t *out_sender_uuid_buf,
+                                                 uintptr_t sender_uuid_buf_len,
+                                                 uintptr_t *out_sender_uuid_len,
+                                                 uint8_t *out_message_buf,
+                                                 uintptr_t message_buf_len,
+                                                 uintptr_t *out_message_len);
+
 #endif  /* PACK_PROTOCOL_H */

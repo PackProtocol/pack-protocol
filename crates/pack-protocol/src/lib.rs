@@ -15,6 +15,7 @@ pub mod group;
 pub mod fingerprint;
 pub mod store;
 pub mod errors;
+pub mod api;
 mod proto;
 
 #[cfg(test)]

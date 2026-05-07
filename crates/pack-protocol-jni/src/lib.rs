@@ -5,6 +5,7 @@
 // classes define native methods that map to these.
 
 mod convert;
+mod api_jni;
 
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass};
@@ -49,6 +50,26 @@ pub unsafe extern "system" fn Java_org_pack_protocol_IdentityKeyPair_nativeGetPu
         }
     };
     let bytes = pair.public.as_bytes();
+    match env.byte_array_from_slice(bytes) {
+        Ok(arr) => arr.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_pack_protocol_IdentityKeyPair_nativeGetPrivateKey<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass,
+    handle: jlong,
+) -> jbyteArray {
+    let pair: &IdentityKeyPair = match from_handle(handle) {
+        Some(p) => p,
+        None => {
+            let _ = throw_error(&mut env, "Invalid handle");
+            return std::ptr::null_mut();
+        }
+    };
+    let bytes = pair.private_key().as_bytes();
     match env.byte_array_from_slice(bytes) {
         Ok(arr) => arr.into_raw(),
         Err(_) => std::ptr::null_mut(),

@@ -72,6 +72,80 @@ pub struct SenderKeyState {
     skipped_keys: HashMap<u32, MessageKey>,
 }
 
+impl SenderKeyState {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.chain_id.to_be_bytes());
+        out.extend_from_slice(&self.iteration.to_be_bytes());
+        out.extend_from_slice(self.chain_key.as_bytes());
+        out.extend_from_slice(self.signing_key.as_bytes());
+        match &self.signing_private {
+            Some(k) => { out.push(1); out.extend_from_slice(k.as_bytes()); }
+            None => { out.push(0); }
+        }
+        out.extend_from_slice(&(self.skipped_keys.len() as u32).to_be_bytes());
+        for (&seq, mk) in &self.skipped_keys {
+            out.extend_from_slice(&seq.to_be_bytes());
+            out.extend_from_slice(mk.as_bytes());
+        }
+        out
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() < 4 + 4 + 32 + 32 + 1 {
+            return Err(PackError::InvalidMessage("sender key state too short".into()));
+        }
+        let mut pos = 0;
+        let chain_id = u32::from_be_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]);
+        pos += 4;
+        let iteration = u32::from_be_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]);
+        pos += 4;
+        let mut ck = [0u8; 32];
+        ck.copy_from_slice(&data[pos..pos+32]);
+        pos += 32;
+        let mut sk = [0u8; 32];
+        sk.copy_from_slice(&data[pos..pos+32]);
+        pos += 32;
+        let has_private = data[pos];
+        pos += 1;
+        let signing_private = if has_private == 1 {
+            if data.len() < pos + 32 {
+                return Err(PackError::InvalidMessage("sender key state truncated".into()));
+            }
+            let mut pk = [0u8; 32];
+            pk.copy_from_slice(&data[pos..pos+32]);
+            pos += 32;
+            Some(curve::PrivateKey::from_bytes(pk))
+        } else {
+            None
+        };
+        let mut skipped_keys = HashMap::new();
+        if data.len() >= pos + 4 {
+            let count = u32::from_be_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]) as usize;
+            pos += 4;
+            for _ in 0..count {
+                if data.len() < pos + 4 + 32 {
+                    return Err(PackError::InvalidMessage("sender key state truncated".into()));
+                }
+                let seq = u32::from_be_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]);
+                pos += 4;
+                let mut mk = [0u8; 32];
+                mk.copy_from_slice(&data[pos..pos+32]);
+                pos += 32;
+                skipped_keys.insert(seq, MessageKey::from_bytes(mk));
+            }
+        }
+        Ok(Self {
+            chain_id,
+            iteration,
+            chain_key: ChainKey::from_bytes(ck),
+            signing_key: PublicKey::from_bytes(sk),
+            signing_private,
+            skipped_keys,
+        })
+    }
+}
+
 /// Stored sender key record for a group member. May hold multiple states
 /// to handle re-keying transitions.
 pub struct SenderKeyRecord {
@@ -97,6 +171,7 @@ impl SenderKeyRecord {
         let mut out = Vec::new();
         out.extend_from_slice(&(self.states.len() as u32).to_be_bytes());
         for state in &self.states {
+/*
             out.extend_from_slice(&state.chain_id.to_be_bytes());
             out.extend_from_slice(&state.iteration.to_be_bytes());
             out.extend_from_slice(state.chain_key.as_bytes());
@@ -110,70 +185,55 @@ impl SenderKeyRecord {
                 out.extend_from_slice(&iter.to_be_bytes());
                 out.extend_from_slice(mk.as_bytes());
             }
+*/
+            let sb = state.to_bytes();
+            out.extend_from_slice(&(sb.len() as u32).to_be_bytes());
+            out.extend_from_slice(&sb);
         }
         out
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        let mut pos = 0;
-        let read = |pos: &mut usize, len: usize| -> Result<&[u8]> {
-            if *pos + len > data.len() {
-                return Err(PackError::InvalidMessage("sender key record truncated".into()));
-            }
-            let slice = &data[*pos..*pos + len];
-            *pos += len;
-            Ok(slice)
-        };
 
-        let count_bytes = read(&mut pos, 4)?;
-        let count = u32::from_be_bytes([count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3]]) as usize;
-
+        if data.len() < 4 {
+            return Err(PackError::InvalidMessage("sender key record too short".into()));
+        }
+        let count = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let mut pos = 4;
         let mut states = Vec::with_capacity(count);
         for _ in 0..count {
-            let cid = read(&mut pos, 4)?;
-            let chain_id = u32::from_be_bytes([cid[0], cid[1], cid[2], cid[3]]);
-
-            let it = read(&mut pos, 4)?;
-            let iteration = u32::from_be_bytes([it[0], it[1], it[2], it[3]]);
-
-            let mut ck = [0u8; 32];
-            ck.copy_from_slice(read(&mut pos, 32)?);
-
-            let mut sk = [0u8; 32];
-            sk.copy_from_slice(read(&mut pos, 32)?);
-
-            let has_private = read(&mut pos, 1)?[0];
-            let signing_private = if has_private == 1 {
-                let mut pk = [0u8; 32];
-                pk.copy_from_slice(read(&mut pos, 32)?);
-                Some(crate::crypto::curve::PrivateKey::from_bytes(pk))
-            } else { None };
-
-            let sk_count_bytes = read(&mut pos, 4)?;
-            let sk_count = u32::from_be_bytes([
-                sk_count_bytes[0], sk_count_bytes[1], sk_count_bytes[2], sk_count_bytes[3],
-            ]) as usize;
-
-            let mut skipped_keys = HashMap::with_capacity(sk_count);
-            for _ in 0..sk_count {
-                let ib = read(&mut pos, 4)?;
-                let iter = u32::from_be_bytes([ib[0], ib[1], ib[2], ib[3]]);
-                let mut mk = [0u8; 32];
-                mk.copy_from_slice(read(&mut pos, 32)?);
-                skipped_keys.insert(iter, MessageKey::from_bytes(mk));
+            if data.len() < pos + 4 {
+                return Err(PackError::InvalidMessage("sender key record truncated".into()));
             }
-
-            states.push(SenderKeyState {
-                chain_id,
-                iteration,
-                chain_key: ChainKey::from_bytes(ck),
-                signing_key: PublicKey::from_bytes_validated(sk)?,
-                signing_private,
-                skipped_keys,
-            });
+            let len = u32::from_be_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]) as usize;
+            pos += 4;
+            if data.len() < pos + len {
+                return Err(PackError::InvalidMessage("sender key record truncated".into()));
+            }
+            states.push(SenderKeyState::from_bytes(&data[pos..pos+len])?);
+            pos += len;
         }
-
         Ok(Self { states })
+    }
+
+    pub fn to_bytes_encrypted(&self, storage_key: &[u8; 32]) -> Result<Vec<u8>> {
+        let plaintext = self.to_bytes();
+        let nonce: [u8; 12] = rand::random();
+        let ciphertext = aead::encrypt(storage_key, &nonce, &plaintext, b"sender-key-record")?;
+        let mut out = Vec::with_capacity(12 + ciphertext.len());
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
+    }
+
+    pub fn from_bytes_encrypted(data: &[u8], storage_key: &[u8; 32]) -> Result<Self> {
+        if data.len() < 12 {
+            return Err(PackError::InvalidMessage("encrypted sender key record too short".into()));
+        }
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&data[..12]);
+        let plaintext = aead::decrypt(storage_key, &nonce, &data[12..], b"sender-key-record")?;
+        Self::from_bytes(&plaintext)
     }
 }
 
@@ -543,6 +603,7 @@ mod tests {
         let _ = dist_msg; // used above
     }
 
+<<<<<<< HEAD
     #[test]
     fn test_sender_key_record_serialization_roundtrip() {
         let mut sender_record = SenderKeyRecord::new();
@@ -581,4 +642,6 @@ mod tests {
         let d5 = group_decrypt(&mut restored, &e5).unwrap();
         assert_eq!(d5, b"msg5");
     }
+=======
+>>>>>>> security-audit
 }
