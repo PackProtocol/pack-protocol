@@ -1,4 +1,4 @@
-public enum PackBridgeError {
+public enum PackBridgeError: Sendable {
     case InvalidKey(RustString)
     case UntrustedIdentity(RustString)
     case DuplicateMessage
@@ -102,7 +102,7 @@ extension __swift_bridge__$Option$PackBridgeError {
         }
     }
 }
-public struct SealedSenderDecryptResult {
+public struct SealedSenderDecryptResult: Sendable {
     public var sender_uuid: RustString
     public var sender_device_id: UInt32
     public var plaintext: RustVec<UInt8>
@@ -144,7 +144,7 @@ extension __swift_bridge__$Option$SealedSenderDecryptResult {
     }
 }
 
-public class PackSessionBridge: PackSessionBridgeRefMut {
+public class PackSessionBridge: PackSessionBridgeRefMut, @unchecked Sendable {
     var isOwned: Bool = true
 
     public override init(ptr: UnsafeMutableRawPointer) {
@@ -159,16 +159,16 @@ public class PackSessionBridge: PackSessionBridgeRefMut {
 }
 extension PackSessionBridge {
     class public func initiate<GenericToRustStr: ToRustStr>(_ our_name: GenericToRustStr, _ our_device_id: UInt32, _ identity_public: UnsafeBufferPointer<UInt8>, _ identity_private: UnsafeBufferPointer<UInt8>, _ registration_id: UInt32, _ remote_name: GenericToRustStr, _ remote_device_id: UInt32, _ bundle_identity_key: UnsafeBufferPointer<UInt8>, _ bundle_spk_id: UInt32, _ bundle_spk: UnsafeBufferPointer<UInt8>, _ bundle_spk_signature: UnsafeBufferPointer<UInt8>, _ bundle_spk_timestamp: UInt64, _ bundle_opk_id: Optional<UInt32>, _ bundle_opk: Optional<RustVec<UInt8>>, _ first_message: UnsafeBufferPointer<UInt8>) throws -> PackSessionBridge {
-        return remote_name.toRustStr({ remote_nameAsRustStr in
-            return our_name.toRustStr({ our_nameAsRustStr in
+        return try remote_name.toRustStr({ remote_nameAsRustStr in
+            return try our_name.toRustStr({ our_nameAsRustStr in
             try { let val = __swift_bridge__$PackSessionBridge$initiate(our_nameAsRustStr, our_device_id, identity_public.toFfiSlice(), identity_private.toFfiSlice(), registration_id, remote_nameAsRustStr, remote_device_id, bundle_identity_key.toFfiSlice(), bundle_spk_id, bundle_spk.toFfiSlice(), bundle_spk_signature.toFfiSlice(), bundle_spk_timestamp, bundle_opk_id.intoFfiRepr(), { if let val = bundle_opk { val.isOwned = false; return val.ptr } else { return nil } }(), first_message.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultPackSessionBridgeAndPackBridgeError$ResultOk: return PackSessionBridge(ptr: val.payload.ok) case __swift_bridge__$ResultPackSessionBridgeAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
         })
         })
     }
 
     class public func respond<GenericToRustStr: ToRustStr>(_ our_name: GenericToRustStr, _ our_device_id: UInt32, _ identity_public: UnsafeBufferPointer<UInt8>, _ identity_private: UnsafeBufferPointer<UInt8>, _ registration_id: UInt32, _ remote_name: GenericToRustStr, _ remote_device_id: UInt32, _ spk_id: UInt32, _ spk_public: UnsafeBufferPointer<UInt8>, _ spk_private: UnsafeBufferPointer<UInt8>, _ spk_signature: UnsafeBufferPointer<UInt8>, _ spk_timestamp: UInt64, _ opk_id: Optional<UInt32>, _ opk_public: Optional<RustVec<UInt8>>, _ opk_private: Optional<RustVec<UInt8>>, _ pre_key_message_bytes: UnsafeBufferPointer<UInt8>) throws -> PackSessionBridge {
-        return remote_name.toRustStr({ remote_nameAsRustStr in
-            return our_name.toRustStr({ our_nameAsRustStr in
+        return try remote_name.toRustStr({ remote_nameAsRustStr in
+            return try our_name.toRustStr({ our_nameAsRustStr in
             try { let val = __swift_bridge__$PackSessionBridge$respond(our_nameAsRustStr, our_device_id, identity_public.toFfiSlice(), identity_private.toFfiSlice(), registration_id, remote_nameAsRustStr, remote_device_id, spk_id, spk_public.toFfiSlice(), spk_private.toFfiSlice(), spk_signature.toFfiSlice(), spk_timestamp, opk_id.intoFfiRepr(), { if let val = opk_public { val.isOwned = false; return val.ptr } else { return nil } }(), { if let val = opk_private { val.isOwned = false; return val.ptr } else { return nil } }(), pre_key_message_bytes.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultPackSessionBridgeAndPackBridgeError$ResultOk: return PackSessionBridge(ptr: val.payload.ok) case __swift_bridge__$ResultPackSessionBridgeAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
         })
         })
@@ -270,7 +270,7 @@ extension PackSessionBridge: Vectorizable {
 }
 
 
-public class PackGroupSessionBridge: PackGroupSessionBridgeRefMut {
+public class PackGroupSessionBridge: PackGroupSessionBridgeRefMut, @unchecked Sendable {
     var isOwned: Bool = true
 
     public override init(ptr: UnsafeMutableRawPointer) {
@@ -285,13 +285,13 @@ public class PackGroupSessionBridge: PackGroupSessionBridgeRefMut {
 }
 extension PackGroupSessionBridge {
     class public func create_sender<GenericToRustStr: ToRustStr>(_ distribution_id: GenericToRustStr) throws -> PackGroupSessionBridge {
-        return distribution_id.toRustStr({ distribution_idAsRustStr in
+        return try distribution_id.toRustStr({ distribution_idAsRustStr in
             try { let val = __swift_bridge__$PackGroupSessionBridge$create_sender(distribution_idAsRustStr); switch val.tag { case __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError$ResultOk: return PackGroupSessionBridge(ptr: val.payload.ok) case __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
         })
     }
 
     class public func create_receiver<GenericToRustStr: ToRustStr>(_ distribution_id: GenericToRustStr, _ distribution_message: UnsafeBufferPointer<UInt8>) throws -> PackGroupSessionBridge {
-        return distribution_id.toRustStr({ distribution_idAsRustStr in
+        return try distribution_id.toRustStr({ distribution_idAsRustStr in
             try { let val = __swift_bridge__$PackGroupSessionBridge$create_receiver(distribution_idAsRustStr, distribution_message.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError$ResultOk: return PackGroupSessionBridge(ptr: val.payload.ok) case __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
         })
     }
@@ -380,7 +380,7 @@ extension PackGroupSessionBridge: Vectorizable {
 }
 
 
-public class PackSealedSenderBridge: PackSealedSenderBridgeRefMut {
+public class PackSealedSenderBridge: PackSealedSenderBridgeRefMut, @unchecked Sendable {
     var isOwned: Bool = true
 
     public override init(ptr: UnsafeMutableRawPointer) {
@@ -395,7 +395,7 @@ public class PackSealedSenderBridge: PackSealedSenderBridgeRefMut {
 }
 extension PackSealedSenderBridge {
     class public func sealed_encrypt<GenericToRustStr: ToRustStr>(_ sender_identity_public: UnsafeBufferPointer<UInt8>, _ sender_identity_private: UnsafeBufferPointer<UInt8>, _ sender_uuid: GenericToRustStr, _ sender_device_id: UInt32, _ server_cert_key: UnsafeBufferPointer<UInt8>, _ server_cert_id: UInt32, _ cert_expiration: UInt64, _ cert_signature: UnsafeBufferPointer<UInt8>, _ recipient_identity: UnsafeBufferPointer<UInt8>, _ inner_message: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> RustVec<UInt8> {
-        return sender_uuid.toRustStr({ sender_uuidAsRustStr in
+        return try sender_uuid.toRustStr({ sender_uuidAsRustStr in
             try { let val = __swift_bridge__$PackSealedSenderBridge$sealed_encrypt(sender_identity_public.toFfiSlice(), sender_identity_private.toFfiSlice(), sender_uuidAsRustStr, sender_device_id, server_cert_key.toFfiSlice(), server_cert_id, cert_expiration, cert_signature.toFfiSlice(), recipient_identity.toFfiSlice(), inner_message.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
         })
     }
@@ -405,7 +405,7 @@ extension PackSealedSenderBridge {
     }
 
     class public func sealed_encrypt_message<GenericToRustStr: ToRustStr>(_ session: PackSessionBridgeRefMut, _ sender_uuid: GenericToRustStr, _ sender_device_id: UInt32, _ server_cert_key: UnsafeBufferPointer<UInt8>, _ server_cert_id: UInt32, _ cert_expiration: UInt64, _ cert_signature: UnsafeBufferPointer<UInt8>, _ plaintext: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> RustVec<UInt8> {
-        return sender_uuid.toRustStr({ sender_uuidAsRustStr in
+        return try sender_uuid.toRustStr({ sender_uuidAsRustStr in
             try { let val = __swift_bridge__$PackSealedSenderBridge$sealed_encrypt_message(session.ptr, sender_uuidAsRustStr, sender_device_id, server_cert_key.toFfiSlice(), server_cert_id, cert_expiration, cert_signature.toFfiSlice(), plaintext.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
         })
     }
@@ -475,7 +475,7 @@ extension PackSealedSenderBridge: Vectorizable {
     }
 }
 
-public struct FingerprintResult {
+public struct FingerprintResult: Sendable {
     public var display_text: RustString
     public var scannable_bytes: RustVec<UInt8>
 
@@ -515,7 +515,7 @@ extension __swift_bridge__$Option$FingerprintResult {
     }
 }
 
-public class PackFingerprintBridge: PackFingerprintBridgeRefMut {
+public class PackFingerprintBridge: PackFingerprintBridgeRefMut, @unchecked Sendable {
     var isOwned: Bool = true
 
     public override init(ptr: UnsafeMutableRawPointer) {
@@ -530,8 +530,8 @@ public class PackFingerprintBridge: PackFingerprintBridgeRefMut {
 }
 extension PackFingerprintBridge {
     class public func generate<GenericToRustStr: ToRustStr>(_ local_identifier: GenericToRustStr, _ local_identity_key: UnsafeBufferPointer<UInt8>, _ remote_identifier: GenericToRustStr, _ remote_identity_key: UnsafeBufferPointer<UInt8>) throws -> FingerprintResult {
-        return remote_identifier.toRustStr({ remote_identifierAsRustStr in
-            return local_identifier.toRustStr({ local_identifierAsRustStr in
+        return try remote_identifier.toRustStr({ remote_identifierAsRustStr in
+            return try local_identifier.toRustStr({ local_identifierAsRustStr in
             try { let val = __swift_bridge__$PackFingerprintBridge$generate(local_identifierAsRustStr, local_identity_key.toFfiSlice(), remote_identifierAsRustStr, remote_identity_key.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultFingerprintResultAndPackBridgeError$ResultOk: return val.payload.ok.intoSwiftRepr() case __swift_bridge__$ResultFingerprintResultAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
         })
         })
@@ -610,7 +610,7 @@ extension PackFingerprintBridge: Vectorizable {
     }
 }
 
-public struct KeyPairResult {
+public struct KeyPairResult: Sendable {
     public var public_key: RustVec<UInt8>
     public var private_key: RustVec<UInt8>
 
@@ -649,7 +649,7 @@ extension __swift_bridge__$Option$KeyPairResult {
         }
     }
 }
-public struct SignedPreKeyResult {
+public struct SignedPreKeyResult: Sendable {
     public var id: UInt32
     public var public_key: RustVec<UInt8>
     public var private_key: RustVec<UInt8>
@@ -694,7 +694,7 @@ extension __swift_bridge__$Option$SignedPreKeyResult {
         }
     }
 }
-public struct PQPreKeyResult {
+public struct PQPreKeyResult: Sendable {
     public var id: UInt32
     public var encapsulation_key: RustVec<UInt8>
     public var decapsulation_key: RustVec<UInt8>
@@ -740,7 +740,7 @@ extension __swift_bridge__$Option$PQPreKeyResult {
     }
 }
 
-public class PackKeyGeneratorBridge: PackKeyGeneratorBridgeRefMut {
+public class PackKeyGeneratorBridge: PackKeyGeneratorBridgeRefMut, @unchecked Sendable {
     var isOwned: Bool = true
 
     public override init(ptr: UnsafeMutableRawPointer) {

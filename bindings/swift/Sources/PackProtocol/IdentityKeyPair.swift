@@ -1,8 +1,8 @@
 import Foundation
 import CPackProtocolFFI
 
-public final class IdentityKeyPair {
-    private var handle: UnsafeMutablePointer<CPackProtocolFFI.IdentityKeyPair>?
+public final class IdentityKeyPair: @unchecked Sendable {
+    private nonisolated(unsafe) var handle: UnsafeMutablePointer<CPackProtocolFFI.IdentityKeyPair>?
 
     public init() {
         var ptr: UnsafeMutablePointer<CPackProtocolFFI.IdentityKeyPair>?

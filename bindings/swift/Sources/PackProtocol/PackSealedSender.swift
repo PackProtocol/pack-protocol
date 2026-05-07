@@ -1,7 +1,7 @@
 import Foundation
 import CPackProtocolFFI
 
-public struct SealedSenderResult {
+public struct SealedSenderResult: Sendable {
     public let senderUuid: String
     public let plaintext: Data
 }

@@ -202,7 +202,7 @@ rule DR_A_Send0:
     [ X3DH_A($A, $B, sk, ~ek, ad), In(spk_pub_b), Fr(~m0) ]
   --[ Send($A, $B, ~m0), ConsumeMK(mk0),
       Secret(~m0, $A, $B), Honest($A), Honest($B) ]->
-    [ DR_A1($A, $B, rk1, 'g'^~ek, ad), Out(<'g'^~ek, ct0>) ]
+    [ DR_A1($A, $B, rk1, ~ek, ad), Out(<'g'^~ek, ct0>) ]
 
 rule DR_B_Recv_Send:
     let rk0    = sk
@@ -232,7 +232,7 @@ rule DR_A_Recv1:
         mk1     = mk_from_ck(ck_r1)
         m1      = adec(mk1, ct1, ad)
     in
-    [ DR_A1($A, $B, rk1, 'g'^~ek_old, ad), In(<drk_pub_b, ct1>) ]
+    [ DR_A1($A, $B, rk1, ~ek_old, ad), In(<drk_pub_b, ct1>) ]
   --[ Recv($A, $B, m1), ConsumeMK(mk1),
       DHRatchet($A, rk2), Honest($A), Honest($B) ]->
     [ DR_A2($A, $B, rk2, drk_pub_b, ad) ]
@@ -345,10 +345,7 @@ rule Group_Decrypt:
 // ====================================================================
 
 rule Fingerprint_Verify:
-    let fp_a = fingerprint('g'^~ik_a, $A)
-        fp_b = fingerprint('g'^~ik_b, $B)
-    in
-    [ !LTK($A, ~ik_a), !DHPub($B, 'g'^~ik_b) ]
+    [ !LTK($A, ~ik_a), !LTK($B, ~ik_b) ]
   --[ Verified($A, $B), Honest($A), Honest($B) ]->
     [ !FPVerified($A, $B) ]
 
@@ -382,9 +379,9 @@ rule Rev_Session_B:
     [ Out(sk) ]
 
 rule Rev_Ratchet_A:
-    [ DR_A1($A, $B, rk, dh_pub, ad) ]
+    [ DR_A1($A, $B, rk, ~ek_old, ad) ]
   --[ RevRatchet($A, $B) ]->
-    [ Out(rk) ]
+    [ Out(rk), Out(~ek_old) ]
 
 rule Rev_GroupChain:
     [ GrpSend($G, $S, ~ck, ~sk) ]

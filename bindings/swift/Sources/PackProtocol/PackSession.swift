@@ -1,8 +1,8 @@
 import Foundation
 import CPackProtocolFFI
 
-public final class PackSession {
-    private var handle: UnsafeMutableRawPointer?
+public final class PackSession: @unchecked Sendable {
+    private nonisolated(unsafe) var handle: UnsafeMutableRawPointer?
 
     private init(handle: UnsafeMutableRawPointer) {
         self.handle = handle
@@ -14,12 +14,12 @@ public final class PackSession {
         }
     }
 
-    public struct InitiateResult {
+    public struct InitiateResult: Sendable {
         public let session: PackSession
         public let preKeyMessage: Data
     }
 
-    public struct RespondResult {
+    public struct RespondResult: Sendable {
         public let session: PackSession
         public let plaintext: Data
     }
@@ -117,7 +117,7 @@ public final class PackSession {
     }
 }
 
-public enum PackProtocolError: Error {
+public enum PackProtocolError: Error, Sendable {
     case sessionInitFailed
     case invalidHandle
     case encryptFailed

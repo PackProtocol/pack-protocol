@@ -1,8 +1,8 @@
 import Foundation
 import CPackProtocolFFI
 
-public final class PackGroupSession {
-    private var handle: UnsafeMutableRawPointer?
+public final class PackGroupSession: @unchecked Sendable {
+    private nonisolated(unsafe) var handle: UnsafeMutableRawPointer?
 
     private init(handle: UnsafeMutableRawPointer) {
         self.handle = handle
@@ -14,7 +14,7 @@ public final class PackGroupSession {
         }
     }
 
-    public struct CreateSenderResult {
+    public struct CreateSenderResult: Sendable {
         public let session: PackGroupSession
         public let distributionMessage: Data
     }
