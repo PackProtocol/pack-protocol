@@ -351,4 +351,5 @@ mod tests {
         assert_eq!(kp1.public, same);
         assert_ne!(kp1.public, kp2.public);
     }
+
 }

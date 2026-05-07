@@ -185,4 +185,5 @@ mod tests {
         assert_ne!(ck1.as_bytes(), ck2.as_bytes());
         assert_ne!(ck2.as_bytes(), ck3.as_bytes());
     }
+
 }
