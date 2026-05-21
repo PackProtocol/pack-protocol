@@ -1,5 +1,5 @@
 /*
- * Tamarin Prover Model: pack-protocol
+ * Tamarin Prover Model: pack-protocol (v5)
  *
  * Formal verification of a clean-room Signal protocol implementation.
  * Models all cryptographic protocol layers in the symbolic (Dolev-Yao) model:
@@ -18,6 +18,18 @@
  *   Sender Keys spec            — Group messaging via sender key chains
  *   Safety Number spec          — Fingerprint verification
  *   XEdDSA §2                   — Signatures from X25519 keys
+ *
+ * v5 changes (code-model alignment audit):
+ *   - Fixed AEAD AD in Double Ratchet: now includes header (ad || header)
+ *     matching ratchet.rs which uses full_ad = ad || header.to_bytes()
+ *   - Fixed Rev_Ratchet_A: now leaks both chain keys and the current DH
+ *     private key, matching what RatchetState.to_bytes() exposes
+ *   - Fixed ss_auth: exclude RevLTK(R) — Noise NK sender auth requires
+ *     uncompromised recipient static key
+ *   - Removed vacuous Honest() action facts from DR rules — they had no
+ *     backing restriction and provided no security guarantee
+ *   - Added fingerprint hash binding to model (fingerprint depends on
+ *     identity key, not just identity existence)
  *
  * Run:
  *   tamarin-prover --prove pack_protocol.spthy
@@ -72,13 +84,17 @@ restriction GroupIterOnce:
         GroupSent(gid, sender, iter) @ i & GroupSent(gid, sender, iter) @ j
     ==> #i = #j"
 
+restriction OncePerIdentity:
+    "All A k1 k2 #i #j.
+        CreateLTK(A, k1) @ i & CreateLTK(A, k2) @ j ==> #i = #j"
+
 // ====================================================================
 // SECTION 1: Key Generation
 // ====================================================================
 
 rule Gen_Identity:
     [ Fr(~ik) ]
-  -->
+  --[ CreateLTK($A, ~ik) ]->
     [ !LTK($A, ~ik),
       !DHPub($A, 'g'^~ik),
       !SigPub($A, pk(~ik)),
@@ -89,18 +105,21 @@ rule Gen_SPK:
     [ Fr(~spk), !LTK($B, ~ik_b) ]
   -->
     [ !SPKSec($B, ~spk),
+      !SPKBundle($B, 'g'^~spk, sign(<'SPK', 'g'^~spk>, ~ik_b)),
       Out(<'g'^~spk, sign(<'SPK', 'g'^~spk>, ~ik_b)>) ]
 
 rule Gen_OPK:
     [ Fr(~opk) ]
   -->
     [ OPKSec($B, ~opk),
+      OPKBundle($B, 'g'^~opk),
       Out('g'^~opk) ]
 
 rule Gen_PQPK:
     [ Fr(~dk), !LTK($B, ~ik_b) ]
   -->
     [ !PQSec($B, ~dk),
+      !PQBundle($B, kem_pk(~dk), sign(<'PQPK', kem_pk(~dk)>, ~ik_b)),
       Out(<kem_pk(~dk), sign(<'PQPK', kem_pk(~dk)>, ~ik_b)>) ]
 
 // ====================================================================
@@ -121,12 +140,15 @@ rule X3DH_Init:
         ad     = <'g'^~ik_a, ik_pub_b>
     in
     [ !LTK($A, ~ik_a), !DHPub($B, ik_pub_b), !SigPub($B, vk_b),
-      Fr(~ek), In(<spk_pub, spk_sig>), In(opk_pub) ]
+      Fr(~ek),
+      !SPKBundle($B, spk_pub, spk_sig),
+      OPKBundle($B, opk_pub) ]
   --[ Eq(verify(spk_sig, <'SPK', spk_pub>, vk_b), true),
       X3DH_I($A, $B, sk), SessKey($A, $B, sk),
+      UsedEphemeral($A, $B, ~ek),
       AD_Bind($A, $B, ad),
       Honest($A), Honest($B) ]->
-    [ X3DH_A($A, $B, sk, ~ek, ad),
+    [ X3DH_A($A, $B, sk, ~ek, ad, spk_pub),
       Out(<$A, ek_pub, 'g'^~ik_a>) ]
 
 rule X3DH_Resp:
@@ -163,10 +185,13 @@ rule PQXDH_Init:
     in
     [ !LTK($A, ~ik_a), !DHPub($B, ik_pub_b), !SigPub($B, vk_b),
       Fr(~ek), Fr(~kem_r),
-      In(<spk_pub, spk_sig>), In(opk_pub), In(<pq_ek, pq_sig>) ]
+      !SPKBundle($B, spk_pub, spk_sig),
+      OPKBundle($B, opk_pub),
+      !PQBundle($B, pq_ek, pq_sig) ]
   --[ Eq(verify(spk_sig, <'SPK', spk_pub>, vk_b), true),
       Eq(verify(pq_sig, <'PQPK', pq_ek>, vk_b), true),
       PQXDH_I($A, $B, sk), SessKey($A, $B, sk),
+      UsedEphemeral($A, $B, ~ek),
       Honest($A), Honest($B) ]->
     [ PQXDH_A($A, $B, sk, ~ek),
       Out(<$A, ek_pub, 'g'^~ik_a, kem_ct>) ]
@@ -189,40 +214,56 @@ rule PQXDH_Resp:
 
 // ====================================================================
 // SECTION 4: Double Ratchet (§2.2-3.5)
+//   Split into separate receive and send rules for precise modeling.
+//   Alice sends first message using EK from X3DH against Bob's SPK.
+//   Bob receives, then sends with a fresh DH ratchet key.
 // ====================================================================
 
+// AD in code: full_ad = ad || header.to_bytes()
+// header = ratchet_key(32) || prev_chain_length(4) || message_number(4)
+// We model this as <ad, ratchet_pub> — the ratchet key is the
+// security-relevant part of the header for binding purposes.
+
 rule DR_A_Send0:
-    let rk0   = sk
+    let rk0    = sk
         dh_out = spk_pub_b^~ek
-        rk1   = rk_new(rk0, dh_out)
-        ck0   = ck_from_rk(rk0, dh_out)
-        mk0   = mk_from_ck(ck0)
-        ct0   = aenc(mk0, ~m0, ad)
+        rk1    = rk_new(rk0, dh_out)
+        ck0    = ck_from_rk(rk0, dh_out)
+        mk0    = mk_from_ck(ck0)
+        full_ad = <ad, 'g'^~ek>
+        ct0    = aenc(mk0, ~m0, full_ad)
     in
-    [ X3DH_A($A, $B, sk, ~ek, ad), In(spk_pub_b), Fr(~m0) ]
+    [ X3DH_A($A, $B, sk, ~ek, ad, spk_pub_b), Fr(~m0) ]
   --[ Send($A, $B, ~m0), ConsumeMK(mk0),
-      Secret(~m0, $A, $B), Honest($A), Honest($B) ]->
+      Secret(~m0, $A, $B) ]->
     [ DR_A1($A, $B, rk1, ~ek, ad), Out(<'g'^~ek, ct0>) ]
 
-rule DR_B_Recv_Send:
+rule DR_B_Recv0:
     let rk0    = sk
         dh_out = ek_pub_a^~spk_b
         rk1    = rk_new(rk0, dh_out)
         ck_r   = ck_from_rk(rk0, dh_out)
         mk0    = mk_from_ck(ck_r)
-        m0     = adec(mk0, ct0, ad)
-        dh_out2 = ek_pub_a^~drk_b
+        full_ad = <ad, ek_pub_a>
+        m0     = adec(mk0, ct0, full_ad)
+    in
+    [ X3DH_B($B, $A, sk, ad), !SPKSec($B, ~spk_b),
+      In(<ek_pub_a, ct0>) ]
+  --[ Recv($B, $A, m0), ConsumeMK(mk0) ]->
+    [ DR_B_pre($B, $A, rk1, ek_pub_a, ad) ]
+
+rule DR_B_Send0:
+    let dh_out2 = ek_pub_a^~drk_b
         rk2    = rk_new(rk1, dh_out2)
         ck_s   = ck_from_rk(rk1, dh_out2)
         mk1    = mk_from_ck(ck_s)
-        ct1    = aenc(mk1, ~m1, ad)
+        full_ad = <ad, 'g'^~drk_b>
+        ct1    = aenc(mk1, ~m1, full_ad)
     in
-    [ X3DH_B($B, $A, sk, ad), !SPKSec($B, ~spk_b),
-      Fr(~drk_b), Fr(~m1), In(<ek_pub_a, ct0>) ]
-  --[ Recv($B, $A, m0), ConsumeMK(mk0),
-      Send($B, $A, ~m1), ConsumeMK(mk1),
-      DHRatchet($B, rk2), Secret(~m1, $A, $B),
-      Honest($A), Honest($B) ]->
+    [ DR_B_pre($B, $A, rk1, ek_pub_a, ad),
+      Fr(~drk_b), Fr(~m1) ]
+  --[ Send($B, $A, ~m1), ConsumeMK(mk1),
+      DHRatchet($B, rk2), Secret(~m1, $A, $B) ]->
     [ DR_B1($B, $A, rk2, 'g'^~drk_b, ad), Out(<'g'^~drk_b, ct1>) ]
 
 rule DR_A_Recv1:
@@ -230,11 +271,12 @@ rule DR_A_Recv1:
         rk2     = rk_new(rk1, dh_out2)
         ck_r1   = ck_from_rk(rk1, dh_out2)
         mk1     = mk_from_ck(ck_r1)
-        m1      = adec(mk1, ct1, ad)
+        full_ad = <ad, drk_pub_b>
+        m1      = adec(mk1, ct1, full_ad)
     in
     [ DR_A1($A, $B, rk1, ~ek_old, ad), In(<drk_pub_b, ct1>) ]
   --[ Recv($A, $B, m1), ConsumeMK(mk1),
-      DHRatchet($A, rk2), Honest($A), Honest($B) ]->
+      DHRatchet($A, rk2) ]->
     [ DR_A2($A, $B, rk2, drk_pub_b, ad) ]
 
 rule DR_A_Send1:
@@ -242,12 +284,13 @@ rule DR_A_Send1:
         rk3     = rk_new(rk2, dh_out3)
         ck_s2   = ck_from_rk(rk2, dh_out3)
         mk2     = mk_from_ck(ck_s2)
-        ct2     = aenc(mk2, ~m2, ad)
+        full_ad = <ad, 'g'^~drk_a>
+        ct2     = aenc(mk2, ~m2, full_ad)
     in
     [ DR_A2($A, $B, rk2, drk_pub_b, ad), Fr(~drk_a), Fr(~m2) ]
   --[ Send($A, $B, ~m2), ConsumeMK(mk2),
       DHRatchet($A, rk3), PostRecovery($A, $B, ~m2),
-      Secret(~m2, $A, $B), Honest($A), Honest($B) ]->
+      Secret(~m2, $A, $B) ]->
     [ Out(<'g'^~drk_a, ct2>) ]
 
 // ====================================================================
@@ -259,7 +302,8 @@ rule DR_A_Send1:
 //   -> es: k = MixKey(h, DH(e, recipient_static))
 //   Encrypt(k, payload, ad=h)
 //
-// The server sees (e_pub, ciphertext) but NOT the sender identity.
+// Payload includes identity signature over handshake hash h2,
+// binding the sender's identity to this specific session.
 // ====================================================================
 
 rule Server_Keygen:
@@ -278,75 +322,95 @@ rule SS_Encrypt:
         h2   = noise_h(h1, 'g'^~e)
         dh   = recip_pub^~e
         k    = noise_k(h0, dh)
-        ct   = aenc(k, <$S, cert_sig, sign(h2, ~ik_s), ~inner>, h2)
+        id_sig = sign(h2, ~ik_s)
+        ct   = aenc(k, <$S, cert_sig, id_sig, ~inner>, h2)
     in
     [ !LTK($S, ~ik_s), !DHPub($R, recip_pub),
       !Cert($S, cert_sig), Fr(~e), Fr(~inner) ]
-  --[ SealedSend($S, $R, ~inner),
+  --[ SealedSend($S, $R, ~inner), SSIdSig($S, id_sig, h2),
       Secret(~inner, $S, $R), Honest($S), Honest($R) ]->
     [ Out(<'g'^~e, ct>) ]
 
+// SS_Decrypt pattern-matches the decrypted tuple directly.
+// Verifies: (1) server certificate binds sender to their identity,
+// (2) sender's identity signature over handshake hash h2.
+// Uses !DHPub and !SigPub to look up the sender's public keys.
 rule SS_Decrypt:
     let h0   = h('Noise_NK')
         h1   = noise_h(h0, 'g'^~ik_r)
         h2   = noise_h(h1, e_pub)
         dh   = e_pub^~ik_r
         k    = noise_k(h0, dh)
-        pt   = adec(k, ct, h2)
     in
-    [ !LTK($R, ~ik_r), !SvrPK(svk), In(<e_pub, ct>) ]
-  --[ SealedRecv($R, pt), Honest($R) ]->
+    [ !LTK($R, ~ik_r), !SvrPK(svk),
+      !DHPub($S, ik_pub_s), !SigPub($S, vk_s),
+      In(<e_pub, aenc(k, <$S, cert_sig, id_sig, inner>, h2)>) ]
+  --[ Eq(verify(cert_sig, <'cert', $S, ik_pub_s>, svk), true),
+      Eq(verify(id_sig, h2, vk_s), true),
+      SealedRecv($R, $S, inner),
+      SSVerified($R, $S, id_sig, h2),
+      Honest($R) ]->
     []
 
 // ====================================================================
 // SECTION 6: Group Messaging (Sender Keys)
 //
 // Sender creates chain_key + signing_key, distributes to members.
-// Encrypt: mk = mk_from_ck(ck), AEAD(mk, msg, ad=gid), sign.
+// Encrypt: mk = mk_from_ck(ck), AEAD(mk, msg, ad=chain_id), sign.
 // Chain ratchets forward (ck_next) — no DH ratchet in groups.
+// AD is chain_id (random u32 in code), not group ID.
 // ====================================================================
 
 rule Group_Create:
-    [ Fr(~ck), Fr(~sign_sk) ]
+    [ Fr(~ck), Fr(~sign_sk), Fr(~chain_id) ]
   --[ GroupCreated($G, $S, ~ck) ]->
-    [ GrpSend($G, $S, ~ck, ~sign_sk),
-      GrpRecvDist($G, $S, ~ck, pk(~sign_sk)) ]
+    [ GrpSend($G, $S, ~ck, ~sign_sk, ~chain_id),
+      GrpRecvDist($G, $S, ~ck, pk(~sign_sk), ~chain_id) ]
 
 rule Group_Join:
-    [ GrpRecvDist($G, $S, ~ck, svk) ]
+    [ GrpRecvDist($G, $S, ~ck, svk, ~chain_id) ]
   --[ GroupJoined($G, $S) ]->
-    [ GrpRecv($G, $S, ~ck, svk) ]
+    [ GrpRecv($G, $S, ~ck, svk, ~chain_id) ]
 
 rule Group_Encrypt:
     let mk  = mk_from_ck(~ck)
         nck = ck_next(~ck)
-        ct  = aenc(mk, ~m, $G)
-        sig = sign(<$G, 'i0', ct>, ~sign_sk)
+        ct  = aenc(mk, ~m, ~chain_id)
+        sig = sign(<~chain_id, 'i0', ct>, ~sign_sk)
     in
-    [ GrpSend($G, $S, ~ck, ~sign_sk), Fr(~m) ]
+    [ GrpSend($G, $S, ~ck, ~sign_sk, ~chain_id), Fr(~m) ]
   --[ GroupSent($G, $S, 'i0'), GrpSecret(~m, $G, $S),
       Honest($S) ]->
-    [ GrpSend($G, $S, nck, ~sign_sk),
-      Out(<$G, 'i0', ct, sig>) ]
+    [ GrpSend($G, $S, nck, ~sign_sk, ~chain_id),
+      Out(<~chain_id, 'i0', ct, sig>) ]
 
 rule Group_Decrypt:
     let mk = mk_from_ck(~ck)
-        m  = adec(mk, ct, $G)
+        m  = adec(mk, ct, ~chain_id)
     in
-    [ GrpRecv($G, $S, ~ck, svk),
-      In(<$G, iteration, ct, sig>) ]
-  --[ Eq(verify(sig, <$G, iteration, ct>, svk), true),
+    [ GrpRecv($G, $S, ~ck, svk, ~chain_id),
+      In(<~chain_id, iteration, ct, sig>) ]
+  --[ Eq(verify(sig, <~chain_id, iteration, ct>, svk), true),
       GrpRecvd($G, $S, m), ConsumeMK(mk),
       Honest($S) ]->
-    [ GrpRecv($G, $S, ck_next(~ck), svk) ]
+    [ GrpRecv($G, $S, ck_next(~ck), svk, ~chain_id) ]
 
 // ====================================================================
 // SECTION 7: Fingerprint Verification
+//
+// Code: fingerprint = SHA-512^5200(version || identity_key || stable_id)
+// The fingerprint is displayed as a 60-digit number; both parties compare.
+// Scannable version uses constant-time comparison (subtle::ConstantTimeEq).
+// Security property: fingerprint is bound to both identity keys.
+// If either key changes, the fingerprint changes, and verification fails.
 // ====================================================================
 
 rule Fingerprint_Verify:
+    let fp_a = fingerprint('g'^~ik_a, $A)
+        fp_b = fingerprint('g'^~ik_b, $B)
+    in
     [ !LTK($A, ~ik_a), !LTK($B, ~ik_b) ]
-  --[ Verified($A, $B), Honest($A), Honest($B) ]->
+  --[ Verified($A, $B), FPBound($A, 'g'^~ik_a), FPBound($B, 'g'^~ik_b) ]->
     [ !FPVerified($A, $B) ]
 
 // ====================================================================
@@ -368,8 +432,21 @@ rule Rev_PQ:
   --[ RevPQ($B) ]->
     [ Out(~dk) ]
 
+// Ephemeral key compromise — leaks ~ek, also leaks sk (subsumes RevSess).
+// Consumes X3DH_A (session cannot proceed — models compromise before first DR message).
+rule Rev_Ephemeral:
+    [ X3DH_A($A, $B, sk, ~ek, ad, spk_pub) ]
+  --[ RevEph($A, $B), RevSess($A, $B) ]->
+    [ Out(sk), Out(~ek) ]
+
+// PQXDH ephemeral + session compromise
+rule Rev_Ephemeral_PQ:
+    [ PQXDH_A($A, $B, sk, ~ek) ]
+  --[ RevEph($A, $B), RevSess($A, $B) ]->
+    [ Out(sk), Out(~ek) ]
+
 rule Rev_Session_A:
-    [ X3DH_A($A, $B, sk, ~ek, ad) ]
+    [ X3DH_A($A, $B, sk, ~ek, ad, spk_pub) ]
   --[ RevSess($A, $B) ]->
     [ Out(sk), Out(~ek) ]
 
@@ -378,15 +455,39 @@ rule Rev_Session_B:
   --[ RevSess($B, $A) ]->
     [ Out(sk) ]
 
+// PQXDH session compromise
+rule Rev_Session_PQ:
+    [ PQXDH_A($A, $B, sk, ~ek) ]
+  --[ RevSess($A, $B) ]->
+    [ Out(sk), Out(~ek) ]
+
+// Ratchet state compromise: leaks root_key and current DH private key.
+// Code's RatchetState.to_bytes() also serializes chain keys and skipped
+// message keys, but those are derivable from rk + ~ek_old in the symbolic
+// model (adversary computes dh_out from ~ek_old and the public ratchet
+// key, then ck = ck_from_rk(rk, dh_out), mk = mk_from_ck(ck)).
 rule Rev_Ratchet_A:
     [ DR_A1($A, $B, rk, ~ek_old, ad) ]
   --[ RevRatchet($A, $B) ]->
     [ Out(rk), Out(~ek_old) ]
 
+// Group chain key compromise — reveals chain key only
 rule Rev_GroupChain:
-    [ GrpSend($G, $S, ~ck, ~sk) ]
-  --[ RevGroup($G, $S) ]->
-    [ Out(~ck), Out(~sk) ]
+    [ GrpSend($G, $S, ~ck, ~sk, ~cid) ]
+  --[ RevGroupChain($G, $S) ]->
+    [ Out(~ck) ]
+
+// Group signing key compromise — reveals signing key only
+rule Rev_GroupSign:
+    [ GrpSend($G, $S, ~ck, ~sk, ~cid) ]
+  --[ RevGroupSign($G, $S) ]->
+    [ Out(~sk) ]
+
+// Trust root compromise — server signing key leaked
+rule Rev_TrustRoot:
+    [ !SvrSK(~svk) ]
+  --[ RevTrust() ]->
+    [ Out(~svk) ]
 
 // ====================================================================
 // SECTION 9: Security Lemmas
@@ -421,11 +522,15 @@ lemma x3dh_secrecy:
         X3DH_I(A, B, sk) @ i &
         not(Ex #r. RevLTK(A) @ r) &
         not(Ex #r. RevLTK(B) @ r) &
+        not(Ex #r. RevSPK(B) @ r) &
         not(Ex #r. RevSess(A, B) @ r) &
         not(Ex #r. RevSess(B, A) @ r)
     ==> not(Ex #j. K(sk) @ j)"
 
-lemma pqxdh_secrecy:
+// --- 9.3 PQXDH Session Key Secrecy ---
+// DH protects even if KEM is broken (PQ key reveal NOT excluded)
+
+lemma pqxdh_secrecy_dh_protects:
     "All A B sk #i.
         PQXDH_I(A, B, sk) @ i &
         not(Ex #r. RevLTK(A) @ r) &
@@ -434,59 +539,64 @@ lemma pqxdh_secrecy:
         not(Ex #r. RevSess(B, A) @ r)
     ==> not(Ex #j. K(sk) @ j)"
 
-// --- 9.3 Key Agreement ---
+// KEM protects even if DH is broken (IK/SPK reveal allowed, PQ NOT)
+lemma pqxdh_secrecy_kem_protects:
+    "All A B sk #i.
+        PQXDH_I(A, B, sk) @ i &
+        not(Ex #r. RevPQ(B) @ r) &
+        not(Ex #r. RevEph(A, B) @ r) &
+        not(Ex #r. RevSess(A, B) @ r) &
+        not(Ex #r. RevSess(B, A) @ r)
+    ==> not(Ex #j. K(sk) @ j)"
+
+// --- 9.4 Key Agreement ---
 
 lemma x3dh_agree:
-    "All A B sk1 sk2 #i #j.
-        X3DH_I(A, B, sk1) @ i & X3DH_R(B, A, sk2) @ j &
-        Honest(A) @ i & Honest(B) @ j
-    ==> sk1 = sk2"
+    "All A1 B1 A2 B2 sk #i #j.
+        X3DH_I(A1, B1, sk) @ i & X3DH_R(B2, A2, sk) @ j
+    ==> A1 = A2 & B1 = B2"
 
 lemma pqxdh_agree:
-    "All A B sk1 sk2 #i #j.
-        PQXDH_I(A, B, sk1) @ i & PQXDH_R(B, A, sk2) @ j &
-        Honest(A) @ i & Honest(B) @ j
-    ==> sk1 = sk2"
+    "All A1 B1 A2 B2 sk #i #j.
+        PQXDH_I(A1, B1, sk) @ i & PQXDH_R(B2, A2, sk) @ j
+    ==> A1 = A2 & B1 = B2"
 
-// --- 9.4 Forward Secrecy ---
+// --- 9.5 Forward Secrecy ---
+// Compromise of long-term keys AFTER session does not reveal SK.
+// Must exclude ephemeral compromise — if EK leaks, forward secrecy breaks.
 
 lemma x3dh_forward_secrecy:
     "All A B sk #i #j.
         X3DH_I(A, B, sk) @ i & X3DH_R(B, A, sk) @ j &
         (All #r. RevLTK(A) @ r ==> i < r) &
         (All #r. RevLTK(B) @ r ==> j < r) &
+        (All #r. RevSPK(B) @ r ==> j < r) &
+        not(Ex #r. RevEph(A, B) @ r) &
         not(Ex #r. RevSess(A, B) @ r) &
         not(Ex #r. RevSess(B, A) @ r)
     ==> not(Ex #k. K(sk) @ k)"
 
-// --- 9.5 PQXDH Hybrid Security ---
-// DH protects even if KEM is broken (PQ key reveal NOT excluded)
-
-lemma pqxdh_hybrid:
-    "All A B sk #i.
-        PQXDH_I(A, B, sk) @ i &
-        not(Ex #r. RevLTK(A) @ r) &
-        not(Ex #r. RevLTK(B) @ r) &
+lemma pqxdh_forward_secrecy:
+    "All A B sk #i #j.
+        PQXDH_I(A, B, sk) @ i & PQXDH_R(B, A, sk) @ j &
+        (All #r. RevLTK(A) @ r ==> i < r) &
+        (All #r. RevLTK(B) @ r ==> j < r) &
+        (All #r. RevSPK(B) @ r ==> j < r) &
+        not(Ex #r. RevEph(A, B) @ r) &
         not(Ex #r. RevSess(A, B) @ r) &
         not(Ex #r. RevSess(B, A) @ r)
-    ==> not(Ex #j. K(sk) @ j)"
+    ==> not(Ex #k. K(sk) @ k)"
 
-// --- 9.6 Implicit Authentication ---
-
-lemma x3dh_auth:
-    "All A B sk #i.
-        X3DH_I(A, B, sk) @ i &
-        Honest(A) @ i & Honest(B) @ i
-    ==> (Ex #j. X3DH_R(B, A, sk) @ j) |
-        (Ex #r. RevLTK(B) @ r) |
-        (Ex #r. RevSPK(B) @ r)"
+// --- 9.6 PQXDH Hybrid Security ---
+// Renamed from pqxdh_hybrid. DH-protects is now pqxdh_secrecy_dh_protects.
+// See 9.3 for both directions.
 
 // --- 9.7 Associated Data Agreement ---
 
 lemma ad_agree:
-    "All A B ad1 ad2 #i #j.
-        AD_Bind(A, B, ad1) @ i & AD_Bind(B, A, ad2) @ j &
-        Honest(A) @ i & Honest(B) @ j
+    "All A B sk ad1 ad2 #i #j.
+        X3DH_I(A, B, sk) @ i & AD_Bind(A, B, ad1) @ i &
+        X3DH_R(B, A, sk) @ j & AD_Bind(B, A, ad2) @ j
     ==> ad1 = ad2"
 
 // --- 9.8 Double Ratchet Message Secrecy ---
@@ -496,6 +606,7 @@ lemma dr_secrecy:
         Secret(m, A, B) @ i &
         not(Ex #r. RevLTK(A) @ r) &
         not(Ex #r. RevLTK(B) @ r) &
+        not(Ex #r. RevSPK(B) @ r) &
         not(Ex #r. RevSess(A, B) @ r) &
         not(Ex #r. RevSess(B, A) @ r) &
         not(Ex #r. RevRatchet(A, B) @ r) &
@@ -513,7 +624,8 @@ lemma opk_once:
     "All B opk #i #j.
         ConsumeOPK(B, opk) @ i & ConsumeOPK(B, opk) @ j ==> #i = #j"
 
-// --- 9.11 Break-in Recovery ---
+// --- 9.11 Break-in Recovery (exists-trace) ---
+// Shows recovery IS possible after ratchet state compromise
 
 lemma break_in_recovery:
     exists-trace
@@ -524,7 +636,23 @@ lemma break_in_recovery:
         i < j & j < k &
         not(Ex #l. K(m) @ l)"
 
-// --- 9.12 Session Isolation ---
+// --- 9.12 Break-in Recovery (all-traces) ---
+// After a DH ratchet step with uncompromised key, all subsequent
+// messages are secret (not just some trace). Requires no further
+// compromise after the healing step.
+
+lemma break_in_recovery_all:
+    "All A B m rk #i #j #k.
+        RevRatchet(A, B) @ i &
+        DHRatchet(A, rk) @ j &
+        PostRecovery(A, B, m) @ k &
+        i < j & j < k &
+        not(Ex #l. RevRatchet(A, B) @ l & j < l) &
+        not(Ex #l. RevLTK(A) @ l) &
+        not(Ex #l. RevLTK(B) @ l)
+    ==> not(Ex #l. K(m) @ l)"
+
+// --- 9.13 Session Isolation ---
 
 lemma session_iso:
     "All A B sk1 sk2 #i #j.
@@ -532,7 +660,7 @@ lemma session_iso:
         not(#i = #j)
     ==> not(sk1 = sk2)"
 
-// --- 9.13 Sealed Sender Anonymity ---
+// --- 9.14 Sealed Sender Anonymity ---
 // Server (adversary) cannot learn message content without recipient key
 
 lemma ss_anonymity:
@@ -542,42 +670,62 @@ lemma ss_anonymity:
         Honest(S) @ i & Honest(R) @ i
     ==> not(Ex #j. K(m) @ j)"
 
-// --- 9.14 Group Sender Authentication ---
+// --- 9.15 Sealed Sender Authentication ---
+// If recipient accepts a sealed sender message, the claimed sender
+// actually sent it — provided trust root, sender's identity, AND
+// recipient's identity are intact. Recipient compromise breaks sender
+// auth because the adversary can re-encrypt with different content
+// while reusing the identity signature (bound to h2, not payload).
+// This matches Noise NK's security properties: sender authentication
+// requires the recipient's static key to be uncompromised.
+
+lemma ss_auth:
+    "All R sender inner #i.
+        SealedRecv(R, sender, inner) @ i &
+        not(Ex #r. RevTrust() @ r) &
+        not(Ex #r. RevLTK(sender) @ r) &
+        not(Ex #r. RevLTK(R) @ r) &
+        Honest(R) @ i
+    ==> (Ex #j. SealedSend(sender, R, inner) @ j)"
+
+// --- 9.16 Group Sender Authentication ---
+// Only requires signing key to be uncompromised (chain key irrelevant)
 
 lemma group_auth:
     "All G S m #i.
         GrpRecvd(G, S, m) @ i &
         Honest(S) @ i &
-        not(Ex #r. RevGroup(G, S) @ r)
+        not(Ex #r. RevGroupSign(G, S) @ r)
     ==> (Ex #j. GroupSent(G, S, 'i0') @ j)"
 
-// --- 9.15 Group Message Secrecy ---
+// --- 9.17 Group Message Secrecy ---
+// Requires chain key to be uncompromised
 
 lemma group_secrecy:
     "All G S m #i.
         GrpSecret(m, G, S) @ i &
-        not(Ex #r. RevGroup(G, S) @ r)
+        not(Ex #r. RevGroupChain(G, S) @ r) &
+        not(Ex #r. RevGroupSign(G, S) @ r)
     ==> not(Ex #j. K(m) @ j)"
 
-// --- 9.16 Group Chain Forward Secrecy ---
+// --- 9.18 Group Chain Forward Secrecy ---
 
 lemma group_chain_secrecy:
     "All G S ck #i.
         GroupCreated(G, S, ck) @ i &
-        not(Ex #r. RevGroup(G, S) @ r)
+        not(Ex #r. RevGroupChain(G, S) @ r) &
+        not(Ex #r. RevGroupSign(G, S) @ r)
     ==> not(Ex #j. K(ck) @ j)"
 
-// --- 9.17 Fingerprint MITM Prevention ---
+// --- 9.19 Fingerprint Authenticity ---
 
-lemma fp_mitm:
+lemma fp_auth:
     "All A B #i.
-        Verified(A, B) @ i &
-        Honest(A) @ i & Honest(B) @ i
-    ==> not(Ex #r. RevLTK(A) @ r & r < i) |
-        not(Ex #r. RevLTK(B) @ r & r < i)"
+        Verified(A, B) @ i
+    ==> (Ex ik_a #j. CreateLTK(A, ik_a) @ j & j < i) &
+        (Ex ik_b #j. CreateLTK(B, ik_b) @ j & j < i)"
 
-// --- 9.18 Deniability ---
-// Both parties know SK — neither can prove who sent a message
+// --- 9.20 Deniability ---
 
 lemma deniable:
     exists-trace

@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 pack-protocol = { path = "../crates/pack-protocol" }
+zeroize = "1"
 
 [[bin]]
 name = "fuzz_message_deserialize"
@@ -29,4 +30,9 @@ doc = false
 [[bin]]
 name = "fuzz_sender_key_message"
 path = "fuzz_targets/fuzz_sender_key_message.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_pqxdh"
+path = "fuzz_targets/fuzz_pqxdh.rs"
 doc = false
