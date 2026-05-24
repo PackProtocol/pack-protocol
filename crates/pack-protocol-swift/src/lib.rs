@@ -240,6 +240,12 @@ mod ffi {
             identity_private: &[u8],
             timestamp: u64,
         ) -> Result<PQPreKeyResult, PackBridgeError>;
+
+        #[swift_bridge(associated_to = PackKeyGeneratorBridge)]
+        fn xeddsa_sign(
+            private_key: &[u8],
+            message: &[u8],
+        ) -> Result<Vec<u8>, PackBridgeError>;
     }
 }
 
@@ -847,5 +853,17 @@ impl PackKeyGeneratorBridge {
             signature: pqpk.signature.to_vec(),
             timestamp: pqpk.timestamp,
         })
+    }
+
+    fn xeddsa_sign(
+        private_key: &[u8],
+        message: &[u8],
+    ) -> Result<Vec<u8>, ffi::PackBridgeError> {
+        let priv_arr: [u8; 32] = private_key
+            .try_into()
+            .map_err(|_| ffi::PackBridgeError::InvalidKey("private key must be 32 bytes".into()))?;
+        let pk = PrivateKey::from_bytes(priv_arr);
+        let sig = pack_protocol::crypto::curve::xeddsa_sign(&pk, message);
+        Ok(sig.to_vec())
     }
 }
