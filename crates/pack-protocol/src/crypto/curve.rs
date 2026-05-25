@@ -224,6 +224,16 @@ pub fn xeddsa_verify(public: &PublicKey, message: &[u8], signature: &[u8; 64]) -
     Err(PackError::InvalidSignature)
 }
 
+pub fn ed25519_verify_raw(public_bytes: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> Result<()> {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    let sig = Signature::from_bytes(signature);
+    let vk = VerifyingKey::from_bytes(public_bytes)
+        .map_err(|_| PackError::InvalidKey("invalid ed25519 public key".into()))?;
+    vk.verify(message, &sig)
+        .map_err(|_| PackError::InvalidSignature)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

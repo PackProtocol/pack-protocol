@@ -616,6 +616,27 @@ impl PackSealedSender {
         sealed_sender::sealed_sender_decrypt(our_identity, ciphertext, trust_root, current_time)
     }
 
+    pub fn encrypt_raw_cert(
+        sender_identity: &IdentityKeyPair,
+        raw_cert_blob: &[u8],
+        recipient_identity: &IdentityKey,
+        inner_message: &[u8],
+        current_time: u64,
+    ) -> Result<Vec<u8>> {
+        sealed_sender::sealed_sender_encrypt_raw_cert(
+            sender_identity, raw_cert_blob, recipient_identity, inner_message, current_time,
+        )
+    }
+
+    pub fn decrypt_raw_cert(
+        our_identity: &IdentityKeyPair,
+        ciphertext: &[u8],
+        trust_root: &PublicKey,
+        current_time: u64,
+    ) -> Result<SealedSenderResult> {
+        sealed_sender::sealed_sender_decrypt_raw_cert(our_identity, ciphertext, trust_root, current_time)
+    }
+
     /// Composed encrypt: session cipher (double ratchet) then sealed sender (Noise NK).
     ///
     /// Plaintext → PackSession::encrypt → sealed_sender_encrypt → envelope bytes.

@@ -12,6 +12,7 @@ use crate::crypto::{aead, kdf};
 use crate::errors::{Result, PackError};
 use crate::keys::{IdentityKey, IdentityKeyPair};
 
+
 /// Server-signed certificate binding a sender to their identity key.
 #[derive(Clone)]
 pub struct SenderCertificate {
@@ -369,6 +370,238 @@ fn read_u64(data: &[u8], offset: &mut usize) -> Result<u64> {
     Ok(val)
 }
 
+// ── Protobuf cert support ──
+// Server sends sender certificates in protobuf format. The inner cert bytes
+// (which the server signed) differ from the Rust binary serialize_content().
+// These functions handle raw protobuf certs end-to-end so the signature
+// over the original bytes is preserved.
+
+struct ProtobufSenderCert {
+    inner_cert_bytes: Vec<u8>,
+    signature: Vec<u8>,
+    sender_uuid: String,
+    sender_device_id: u32,
+    sender_identity: IdentityKey,
+    expiration: u64,
+}
+
+fn read_protobuf_varint(data: &[u8], offset: usize) -> Result<(u64, usize)> {
+    let mut result: u64 = 0;
+    let mut shift = 0;
+    let mut pos = offset;
+    loop {
+        if pos >= data.len() { return Err(PackError::InvalidCertificate); }
+        let byte = data[pos];
+        pos += 1;
+        result |= ((byte & 0x7F) as u64) << shift;
+        if byte & 0x80 == 0 { break; }
+        shift += 7;
+        if shift >= 64 { return Err(PackError::InvalidCertificate); }
+    }
+    Ok((result, pos))
+}
+
+fn parse_protobuf_sender_cert(data: &[u8]) -> Result<ProtobufSenderCert> {
+    let mut inner_cert_bytes: Option<Vec<u8>> = None;
+    let mut signature: Option<Vec<u8>> = None;
+    let mut offset = 0;
+
+    while offset < data.len() {
+        let tag = data[offset];
+        offset += 1;
+        let field_number = (tag >> 3) as usize;
+        let wire_type = (tag & 0x07) as usize;
+        match wire_type {
+            0 => { let (_, o) = read_protobuf_varint(data, offset)?; offset = o; }
+            1 => { offset += 8; if offset > data.len() { return Err(PackError::InvalidCertificate); } }
+            2 => {
+                let (len, o) = read_protobuf_varint(data, offset)?;
+                offset = o;
+                let end = offset + len as usize;
+                if end > data.len() { return Err(PackError::InvalidCertificate); }
+                match field_number {
+                    1 => inner_cert_bytes = Some(data[offset..end].to_vec()),
+                    2 => signature = Some(data[offset..end].to_vec()),
+                    _ => {}
+                }
+                offset = end;
+            }
+            5 => { offset += 4; if offset > data.len() { return Err(PackError::InvalidCertificate); } }
+            _ => return Err(PackError::InvalidCertificate),
+        }
+    }
+
+    let inner = inner_cert_bytes.ok_or(PackError::InvalidCertificate)?;
+    let sig = signature.ok_or(PackError::InvalidCertificate)?;
+
+    let mut uuid: Option<String> = None;
+    let mut device_id: u32 = 0;
+    let mut expiration: u64 = 0;
+    let mut identity_key_bytes: Option<Vec<u8>> = None;
+    offset = 0;
+
+    while offset < inner.len() {
+        let tag = inner[offset];
+        offset += 1;
+        let field_number = (tag >> 3) as usize;
+        let wire_type = (tag & 0x07) as usize;
+        match wire_type {
+            0 => {
+                let (val, o) = read_protobuf_varint(&inner, offset)?;
+                offset = o;
+                if field_number == 2 || field_number == 3 { device_id = val as u32; }
+            }
+            1 => {
+                if offset + 8 > inner.len() { return Err(PackError::InvalidCertificate); }
+                if field_number == 3 || field_number == 4 {
+                    expiration = u64::from_le_bytes(inner[offset..offset + 8].try_into().unwrap());
+                }
+                offset += 8;
+            }
+            2 => {
+                let (len, o) = read_protobuf_varint(&inner, offset)?;
+                offset = o;
+                let end = offset + len as usize;
+                if end > inner.len() { return Err(PackError::InvalidCertificate); }
+                match field_number {
+                    1 | 6 => {
+                        let bytes = &inner[offset..end];
+                        if let Ok(s) = String::from_utf8(bytes.to_vec()) {
+                            if !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b > 0x1F) {
+                                uuid = Some(s);
+                            }
+                        }
+                    }
+                    4 | 5 => {
+                        let len = end - offset;
+                        if len == 32 || len == 33 {
+                            identity_key_bytes = Some(inner[offset..end].to_vec());
+                        }
+                    }
+                    _ => {}
+                }
+                offset = end;
+            }
+            5 => { offset += 4; if offset > inner.len() { return Err(PackError::InvalidCertificate); } }
+            _ => return Err(PackError::InvalidCertificate),
+        }
+    }
+
+    let ik_raw = identity_key_bytes.ok_or(PackError::InvalidCertificate)?;
+    let ik_slice = if ik_raw.len() == 33 && ik_raw[0] == 0x05 { &ik_raw[1..] } else { &ik_raw };
+    let ik_arr: [u8; 32] = ik_slice.try_into().map_err(|_| PackError::InvalidCertificate)?;
+
+    Ok(ProtobufSenderCert {
+        inner_cert_bytes: inner,
+        signature: sig,
+        sender_uuid: uuid.ok_or(PackError::InvalidCertificate)?,
+        sender_device_id: device_id,
+        sender_identity: IdentityKey::from_bytes(ik_arr)?,
+        expiration,
+    })
+}
+
+pub fn sealed_sender_encrypt_raw_cert(
+    sender_identity: &IdentityKeyPair,
+    raw_cert_blob: &[u8],
+    recipient_identity: &IdentityKey,
+    inner_message: &[u8],
+    current_time: u64,
+) -> Result<Vec<u8>> {
+    let cert = parse_protobuf_sender_cert(raw_cert_blob)?;
+    if cert.expiration < current_time {
+        return Err(PackError::ExpiredCertificate);
+    }
+
+    let (mut h, ck) = noise_nk_init(recipient_identity.public_key());
+    let ephemeral = KeyPair::generate();
+    h = mix_hash(&h, ephemeral.public.as_bytes());
+    let dh_result = Zeroizing::new(curve::dh(&ephemeral.private, recipient_identity.public_key())?);
+    let (_ck, k) = mix_key(&ck, &*dh_result)?;
+    let identity_signature = sender_identity.sign(&h);
+
+    let mut payload = Vec::with_capacity(4 + raw_cert_blob.len() + 64 + inner_message.len());
+    payload.extend_from_slice(&(raw_cert_blob.len() as u32).to_be_bytes());
+    payload.extend_from_slice(raw_cert_blob);
+    payload.extend_from_slice(&identity_signature);
+    payload.extend_from_slice(inner_message);
+
+    let nonce = [0u8; 12];
+    let encrypted = aead::encrypt(&k, &nonce, &payload, &h)?;
+    h = mix_hash(&h, &encrypted);
+    let _ = h;
+
+    Ok(serialize_sealed_sender(&SealedSenderMessage {
+        version: 2,
+        ephemeral_public: ephemeral.public.clone(),
+        encrypted_content: encrypted,
+    }))
+}
+
+pub fn sealed_sender_decrypt_raw_cert(
+    our_identity: &IdentityKeyPair,
+    ciphertext: &[u8],
+    trust_root: &PublicKey,
+    current_time: u64,
+) -> Result<SealedSenderResult> {
+    let msg = deserialize_sealed_sender(ciphertext)?;
+
+    let (mut h, ck) = noise_nk_init(our_identity.public.public_key());
+    h = mix_hash(&h, msg.ephemeral_public.as_bytes());
+    let dh_result = Zeroizing::new(curve::dh(our_identity.private_key(), &msg.ephemeral_public)?);
+    let (_ck, k) = mix_key(&ck, &*dh_result)?;
+
+    let nonce = [0u8; 12];
+    let h_at_sign = h;
+    let payload = aead::decrypt(&k, &nonce, &msg.encrypted_content, &h_at_sign)?;
+    let _h = mix_hash(&h_at_sign, &msg.encrypted_content);
+
+    if payload.len() < 4 {
+        return Err(PackError::InvalidMessage("sealed sender payload too short".into()));
+    }
+    let mut offset = 0;
+    let cert_len = read_u32(&payload, &mut offset)? as usize;
+    if payload.len() < offset + cert_len {
+        return Err(PackError::InvalidMessage("sealed sender certificate truncated".into()));
+    }
+    let cert = parse_protobuf_sender_cert(&payload[offset..offset + cert_len])?;
+    offset += cert_len;
+
+    if payload.len() < offset + 64 {
+        return Err(PackError::InvalidMessage("sealed sender identity signature missing".into()));
+    }
+    let mut identity_sig = [0u8; 64];
+    identity_sig.copy_from_slice(&payload[offset..offset + 64]);
+    offset += 64;
+    let inner_message = payload[offset..].to_vec();
+
+    if cert.expiration < current_time {
+        return Err(PackError::ExpiredCertificate);
+    }
+
+    if cert.signature.len() != 64 {
+        return Err(PackError::InvalidCertificate);
+    }
+    let mut server_sig = [0u8; 64];
+    server_sig.copy_from_slice(&cert.signature);
+    let server_sig_ok = curve::xeddsa_verify(trust_root, &cert.inner_cert_bytes, &server_sig).is_ok()
+        || curve::ed25519_verify_raw(trust_root.as_bytes(), &cert.inner_cert_bytes, &server_sig).is_ok();
+    if !server_sig_ok {
+        return Err(PackError::InvalidSignature);
+    }
+    let identity_sig_ok = curve::xeddsa_verify(cert.sender_identity.public_key(), &h_at_sign, &identity_sig).is_ok()
+        || curve::ed25519_verify_raw(cert.sender_identity.public_key().as_bytes(), &h_at_sign, &identity_sig).is_ok();
+    if !identity_sig_ok {
+        return Err(PackError::InvalidSignature);
+    }
+
+    Ok(SealedSenderResult {
+        sender_uuid: cert.sender_uuid,
+        sender_device_id: cert.sender_device_id,
+        plaintext: inner_message,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,4 +861,117 @@ mod tests {
         assert!(decrypt_result.is_err(), "forged sender identity must be rejected");
     }
 
+    #[test]
+    fn test_parse_protobuf_sender_cert_real_format() {
+        // Simulates the exact protobuf encoding the real server produces:
+        // Outer: field 1 (bytes) = inner cert, field 2 (bytes) = signature
+        // Inner: field 1 (string) = UUID, field 3 (varint/uint32) = device_id,
+        //        field 4 (fixed64) = expires, field 5 (bytes) = identity_key,
+        //        field 6 (message) = signer (ServerCertificate)
+        let identity = IdentityKeyPair::generate();
+        let ik_bytes = identity.public.as_bytes();
+
+        // Build inner cert protobuf manually
+        let mut inner = Vec::new();
+        // field 1, wire type 2 (LDS): sender_uuid
+        let uuid = "test-user-uuid-1234";
+        inner.push((1 << 3) | 2); // tag: field 1, wire type 2
+        inner.push(uuid.len() as u8); // length
+        inner.extend_from_slice(uuid.as_bytes());
+        // field 3, wire type 0 (varint): sender_device_id = 42
+        inner.push((3 << 3) | 0); // tag: field 3, wire type 0
+        inner.push(42); // varint value 42
+        // field 4, wire type 1 (fixed64): expires
+        let expires: u64 = 9999999999000;
+        inner.push((4 << 3) | 1); // tag: field 4, wire type 1
+        inner.extend_from_slice(&expires.to_le_bytes());
+        // field 5, wire type 2 (LDS): identity_key
+        inner.push((5 << 3) | 2); // tag: field 5, wire type 2
+        inner.push(32); // 32 bytes
+        inner.extend_from_slice(ik_bytes);
+        // field 6, wire type 2 (LDS): signer (ServerCertificate message — realistic size)
+        // Real ServerCertificate has: field 1 (bytes, ~70 bytes cert) + field 2 (bytes, 64 bytes sig) ≈ 140 bytes
+        let fake_signer = vec![0u8; 140];
+        inner.push((6 << 3) | 2); // tag: field 6, wire type 2
+        // varint encode signer length (140 > 127, needs 2 bytes)
+        let mut signer_len = fake_signer.len();
+        while signer_len >= 0x80 { inner.push((signer_len as u8) | 0x80); signer_len >>= 7; }
+        inner.push(signer_len as u8);
+        inner.extend_from_slice(&fake_signer);
+
+        // Build outer cert protobuf
+        let server_kp = KeyPair::generate();
+        let sig = curve::xeddsa_sign(&server_kp.private, &inner);
+
+        let mut outer = Vec::new();
+        // field 1: certificate (inner cert bytes)
+        outer.push((1 << 3) | 2);
+        let inner_len = inner.len();
+        // varint encode length
+        let mut len_val = inner_len;
+        while len_val >= 0x80 { outer.push((len_val as u8) | 0x80); len_val >>= 7; }
+        outer.push(len_val as u8);
+        outer.extend_from_slice(&inner);
+        // field 2: signature (64 bytes)
+        outer.push((2 << 3) | 2);
+        outer.push(64);
+        outer.extend_from_slice(&sig);
+
+        let cert = parse_protobuf_sender_cert(&outer).expect("should parse real protobuf format");
+        assert_eq!(cert.sender_uuid, uuid);
+        assert_eq!(cert.sender_device_id, 42);
+        assert_eq!(cert.expiration, expires);
+        assert_eq!(cert.sender_identity.as_bytes(), ik_bytes);
+        assert_eq!(cert.signature, sig.to_vec());
+        assert_eq!(cert.inner_cert_bytes, inner);
+    }
+
+    #[test]
+    fn test_parse_protobuf_sender_cert_signal_format() {
+        // Signal's original field numbering: field 2=device, 3=expires, 4=identity, 5=signer, 6=uuid
+        let identity = IdentityKeyPair::generate();
+        let ik_bytes = identity.public.as_bytes();
+
+        let mut inner = Vec::new();
+        // field 2, wire type 0: device_id = 66
+        inner.push((2 << 3) | 0);
+        inner.push(66);
+        // field 3, wire type 1: expires (fixed64)
+        let expires: u64 = 1778971556772;
+        inner.push((3 << 3) | 1);
+        inner.extend_from_slice(&expires.to_le_bytes());
+        // field 4, wire type 2: identity_key (32 bytes)
+        inner.push((4 << 3) | 2);
+        inner.push(32);
+        inner.extend_from_slice(ik_bytes);
+        // field 5, wire type 2: signer (nested message, 105 bytes of junk)
+        let signer_data = vec![0x0Au8; 105];
+        inner.push((5 << 3) | 2);
+        inner.push(105);
+        inner.extend_from_slice(&signer_data);
+        // field 6, wire type 2: uuid (36 chars)
+        let uuid = "97ACDAE5-1404-4960-959F-C139E79CF436";
+        inner.push((6 << 3) | 2);
+        inner.push(uuid.len() as u8);
+        inner.extend_from_slice(uuid.as_bytes());
+
+        let server_kp = KeyPair::generate();
+        let sig = curve::xeddsa_sign(&server_kp.private, &inner);
+
+        let mut outer = Vec::new();
+        outer.push((1 << 3) | 2);
+        let mut len_val = inner.len();
+        while len_val >= 0x80 { outer.push((len_val as u8) | 0x80); len_val >>= 7; }
+        outer.push(len_val as u8);
+        outer.extend_from_slice(&inner);
+        outer.push((2 << 3) | 2);
+        outer.push(64);
+        outer.extend_from_slice(&sig);
+
+        let cert = parse_protobuf_sender_cert(&outer).expect("should parse Signal-format cert");
+        assert_eq!(cert.sender_uuid, uuid);
+        assert_eq!(cert.sender_device_id, 66);
+        assert_eq!(cert.expiration, expires);
+        assert_eq!(cert.sender_identity.as_bytes(), ik_bytes);
+    }
 }

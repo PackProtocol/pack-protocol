@@ -78,6 +78,7 @@ mod ffi {
         fn decrypt(&mut self, message_bytes: &[u8]) -> Result<Vec<u8>, PackBridgeError>;
         fn pre_key_message(&self) -> Option<Vec<u8>>;
         fn first_plaintext(&self) -> Option<Vec<u8>>;
+        fn remote_identity_key(&self) -> Vec<u8>;
         fn to_bytes(&self) -> Vec<u8>;
 
         #[swift_bridge(associated_to = PackSessionBridge)]
@@ -132,6 +133,25 @@ mod ffi {
 
         #[swift_bridge(associated_to = PackSealedSenderBridge)]
         fn sealed_decrypt(
+            our_identity_public: &[u8],
+            our_identity_private: &[u8],
+            ciphertext: &[u8],
+            trust_root: &[u8],
+            current_time: u64,
+        ) -> Result<SealedSenderDecryptResult, PackBridgeError>;
+
+        #[swift_bridge(associated_to = PackSealedSenderBridge)]
+        fn sealed_encrypt_raw_cert(
+            sender_identity_public: &[u8],
+            sender_identity_private: &[u8],
+            raw_cert_blob: &[u8],
+            recipient_identity: &[u8],
+            inner_message: &[u8],
+            current_time: u64,
+        ) -> Result<Vec<u8>, PackBridgeError>;
+
+        #[swift_bridge(associated_to = PackSealedSenderBridge)]
+        fn sealed_decrypt_raw_cert(
             our_identity_public: &[u8],
             our_identity_private: &[u8],
             ciphertext: &[u8],
@@ -394,6 +414,10 @@ impl PackSessionBridge {
         self.first_plaintext.clone()
     }
 
+    fn remote_identity_key(&self) -> Vec<u8> {
+        self.inner.remote_identity().as_bytes().to_vec()
+    }
+
     fn to_bytes(&self) -> Vec<u8> {
         self.inner.to_bytes()
     }
@@ -557,6 +581,52 @@ impl PackSealedSenderBridge {
             ciphertext,
             &trust_root_key,
             current_time,
+        ))?;
+
+        Ok(ffi::SealedSenderDecryptResult {
+            sender_uuid: result.sender_uuid,
+            sender_device_id: result.sender_device_id,
+            plaintext: result.plaintext,
+        })
+    }
+
+    fn sealed_encrypt_raw_cert(
+        sender_identity_public: &[u8],
+        sender_identity_private: &[u8],
+        raw_cert_blob: &[u8],
+        recipient_identity: &[u8],
+        inner_message: &[u8],
+        current_time: u64,
+    ) -> Result<Vec<u8>, ffi::PackBridgeError> {
+        let sender_identity = build_identity_pair(sender_identity_public, sender_identity_private)?;
+        let recipient = IdentityKey::from_bytes(
+            recipient_identity
+                .try_into()
+                .map_err(|_| ffi::PackBridgeError::InvalidKey("recipient key must be 32 bytes".into()))?,
+        )
+        .map_err(|e| ffi::PackBridgeError::InvalidKey(e.to_string()))?;
+
+        map_err(api::PackSealedSender::encrypt_raw_cert(
+            &sender_identity, raw_cert_blob, &recipient, inner_message, current_time,
+        ))
+    }
+
+    fn sealed_decrypt_raw_cert(
+        our_identity_public: &[u8],
+        our_identity_private: &[u8],
+        ciphertext: &[u8],
+        trust_root: &[u8],
+        current_time: u64,
+    ) -> Result<ffi::SealedSenderDecryptResult, ffi::PackBridgeError> {
+        let our_identity = build_identity_pair(our_identity_public, our_identity_private)?;
+        let trust_root_key = PublicKey::from_bytes(
+            trust_root
+                .try_into()
+                .map_err(|_| ffi::PackBridgeError::InvalidKey("trust root must be 32 bytes".into()))?,
+        );
+
+        let result = map_err(api::PackSealedSender::decrypt_raw_cert(
+            &our_identity, ciphertext, &trust_root_key, current_time,
         ))?;
 
         Ok(ffi::SealedSenderDecryptResult {
