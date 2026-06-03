@@ -641,4 +641,79 @@ mod tests {
         let d5 = group_decrypt(&mut restored, &e5).unwrap();
         assert_eq!(d5, b"msg5");
     }
+
+    #[test]
+    fn test_max_sender_key_states_truncation() {
+        let mut sender_record = SenderKeyRecord::new();
+
+        let mut dist_msgs = Vec::new();
+        for _ in 0..MAX_SENDER_KEY_STATES + 1 {
+            let msg = create_sender_key_distribution_message("group-1", &mut sender_record).unwrap();
+            dist_msgs.push(msg);
+        }
+
+        assert_eq!(sender_record.states.len(), MAX_SENDER_KEY_STATES);
+
+        // The oldest chain (dist_msgs[0]) should have been truncated
+        let oldest_chain_id = dist_msgs[0].chain_id;
+        assert!(sender_record.state_for_chain_id(oldest_chain_id).is_none());
+
+        // The newest chain should be at position 0
+        let newest_chain_id = dist_msgs[MAX_SENDER_KEY_STATES].chain_id;
+        assert_eq!(sender_record.state_for_chain_id(newest_chain_id), Some(0));
+
+        // A receiver with only the oldest SKDM cannot decrypt new messages
+        let mut stale_receiver = SenderKeyRecord::new();
+        process_sender_key_distribution_message(&mut stale_receiver, &dist_msgs[0]);
+
+        let encrypted = group_encrypt(&mut sender_record, b"new message").unwrap();
+        assert!(group_decrypt(&mut stale_receiver, &encrypted).is_err());
+
+        // A receiver with the newest SKDM can decrypt
+        let mut fresh_receiver = SenderKeyRecord::new();
+        process_sender_key_distribution_message(&mut fresh_receiver, &dist_msgs[MAX_SENDER_KEY_STATES]);
+
+        let encrypted2 = group_encrypt(&mut sender_record, b"another message").unwrap();
+        let decrypted = group_decrypt(&mut fresh_receiver, &encrypted2).unwrap();
+        assert_eq!(decrypted, b"another message");
+    }
+
+    #[test]
+    fn test_chain_rotation_breaks_stale_receiver() {
+        let mut sender_record = SenderKeyRecord::new();
+
+        // Create initial chain and distribute to two receivers
+        let dist_msg1 = create_sender_key_distribution_message("group-1", &mut sender_record).unwrap();
+        let mut receiver_a = SenderKeyRecord::new();
+        let mut receiver_b = SenderKeyRecord::new();
+        process_sender_key_distribution_message(&mut receiver_a, &dist_msg1);
+        process_sender_key_distribution_message(&mut receiver_b, &dist_msg1);
+
+        // Both can decrypt
+        let e1 = group_encrypt(&mut sender_record, b"before rotation").unwrap();
+        assert_eq!(group_decrypt(&mut receiver_a, &e1).unwrap(), b"before rotation");
+        assert_eq!(group_decrypt(&mut receiver_b, &e1).unwrap(), b"before rotation");
+
+        // Sender rotates chain (simulates redistribute_skdms creating new chain)
+        let dist_msg2 = create_sender_key_distribution_message("group-1", &mut sender_record).unwrap();
+
+        // Only receiver_a gets the new SKDM (simulates delta sending to new member only)
+        process_sender_key_distribution_message(&mut receiver_a, &dist_msg2);
+
+        // Sender encrypts with new chain (position 0)
+        let e2 = group_encrypt(&mut sender_record, b"after rotation").unwrap();
+
+        // receiver_a can decrypt (has new chain)
+        assert_eq!(group_decrypt(&mut receiver_a, &e2).unwrap(), b"after rotation");
+
+        // receiver_b CANNOT decrypt (only has old chain, not the new one)
+        assert!(group_decrypt(&mut receiver_b, &e2).is_err());
+
+        // receiver_b gets the new SKDM (simulates receiving it later)
+        process_sender_key_distribution_message(&mut receiver_b, &dist_msg2);
+
+        // Now receiver_b can decrypt new messages
+        let e3 = group_encrypt(&mut sender_record, b"after update").unwrap();
+        assert_eq!(group_decrypt(&mut receiver_b, &e3).unwrap(), b"after update");
+    }
 }
