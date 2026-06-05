@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package pack.content;
+
+message PackEnvelope {
+  string client_message_id = 1;
+
+  oneof content {
+    TextMessage text = 2;
+    SenderKeyDistribution skdm = 3;
+    Reaction reaction = 4;
+    MessageDelete deletion = 5;
+    ProfilePush profile = 6;
+    GroupNamePush group_name = 7;
+    ReadReceipt read_receipt = 8;
+    TypingIndicator typing = 9;
+  }
+}
+
+message TextMessage {
+  string body = 1;
+  optional string thread_id = 2;
+  optional string parent_message_id = 3;
+}
+
+message SenderKeyDistribution {
+  bytes skdm_bytes = 1;
+}
+
+message Reaction {
+  string emoji = 1;
+  string target_message_id = 2;
+}
+
+message MessageDelete {
+  string target_message_id = 1;
+}
+
+message ProfilePush {
+  optional string display_name = 1;
+  optional string bio = 2;
+  optional bytes avatar_key = 3;
+}
+
+message GroupNamePush {
+  string name = 1;
+}
+
+message ReadReceipt {
+  repeated string message_ids = 1;
+}
+
+message TypingIndicator {
+  bool started = 1;
+}
