@@ -201,20 +201,6 @@ enum PackFfiError pack_process_sender_key_distribution_message(SenderKeyRecord *
                                                                const uint8_t *message_data,
                                                                uintptr_t message_len);
 
-enum PackFfiError pack_group_encrypt(SenderKeyRecord *record,
-                                     const uint8_t *plaintext,
-                                     uintptr_t plaintext_len,
-                                     uint8_t *out_buf,
-                                     uintptr_t buf_len,
-                                     uintptr_t *out_len);
-
-enum PackFfiError pack_group_decrypt(SenderKeyRecord *record,
-                                     const uint8_t *ciphertext,
-                                     uintptr_t ciphertext_len,
-                                     uint8_t *out_buf,
-                                     uintptr_t buf_len,
-                                     uintptr_t *out_len);
-
 enum PackFfiError pack_sealed_sender_encrypt(const IdentityKeyPair *sender_identity,
                                              const uint8_t *sender_cert_data,
                                              uintptr_t sender_cert_len,
@@ -335,20 +321,6 @@ enum PackFfiError pack_group_session_create_receiver(const uint8_t *distribution
                                                      PackGroupSession **out_session);
 
 void pack_group_session_destroy(PackGroupSession *handle);
-
-enum PackFfiError pack_group_session_encrypt(PackGroupSession *handle,
-                                             const uint8_t *plaintext,
-                                             uintptr_t plaintext_len,
-                                             uint8_t *out_buf,
-                                             uintptr_t buf_len,
-                                             uintptr_t *out_len);
-
-enum PackFfiError pack_group_session_decrypt(PackGroupSession *handle,
-                                             const uint8_t *ciphertext,
-                                             uintptr_t ciphertext_len,
-                                             uint8_t *out_buf,
-                                             uintptr_t buf_len,
-                                             uintptr_t *out_len);
 
 enum PackFfiError pack_sealed_sender_encrypt_msg(const IdentityKeyPair *sender_identity,
                                                  const uint8_t *sender_cert_data,

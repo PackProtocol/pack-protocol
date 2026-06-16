@@ -271,57 +271,10 @@ pub unsafe extern "C" fn pack_group_session_destroy(handle: *mut PackGroupSessio
     handles::destroy(handle);
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn pack_group_session_encrypt(
-    handle: *mut PackGroupSession,
-    plaintext: *const u8,
-    plaintext_len: usize,
-    out_buf: *mut u8,
-    buf_len: usize,
-    out_len: *mut usize,
-) -> PackFfiError {
-    if handle.is_null() || plaintext.is_null() {
-        return PackFfiError::InvalidArgument;
-    }
-    let session = &mut *handle;
-    let pt = slice::from_raw_parts(plaintext, plaintext_len);
-
-    match session.encrypt(pt) {
-        Ok(ct) => {
-            if !handles::write_bytes(&ct, out_buf, buf_len, out_len) {
-                return PackFfiError::InvalidArgument;
-            }
-            PackFfiError::Ok
-        }
-        Err(e) => PackFfiError::from(e),
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn pack_group_session_decrypt(
-    handle: *mut PackGroupSession,
-    ciphertext: *const u8,
-    ciphertext_len: usize,
-    out_buf: *mut u8,
-    buf_len: usize,
-    out_len: *mut usize,
-) -> PackFfiError {
-    if handle.is_null() || ciphertext.is_null() {
-        return PackFfiError::InvalidArgument;
-    }
-    let session = &mut *handle;
-    let ct = slice::from_raw_parts(ciphertext, ciphertext_len);
-
-    match session.decrypt(ct) {
-        Ok(pt) => {
-            if !handles::write_bytes(&pt, out_buf, buf_len, out_len) {
-                return PackFfiError::InvalidArgument;
-            }
-            PackFfiError::Ok
-        }
-        Err(e) => PackFfiError::from(e),
-    }
-}
+// pack_group_session_encrypt and pack_group_session_decrypt removed:
+// group messages must go through sealed sender. Use
+// pack_sealed_sender_encrypt_group_message / pack_sealed_sender_unseal_group_message
+// which enforce the sealed sender wrapping.
 
 // ── PackSealedSender ──
 

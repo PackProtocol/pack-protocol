@@ -1,7 +1,7 @@
 use std::slice;
 
 use pack_protocol::group::{
-    self, SenderKeyDistributionMessage, SenderKeyMessage, SenderKeyRecord,
+    self, SenderKeyDistributionMessage, SenderKeyRecord,
 };
 
 use crate::error::PackFfiError;
@@ -91,57 +91,6 @@ pub unsafe extern "C" fn pack_process_sender_key_distribution_message(
     PackFfiError::Ok
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn pack_group_encrypt(
-    record: *mut SenderKeyRecord,
-    plaintext: *const u8,
-    plaintext_len: usize,
-    out_buf: *mut u8,
-    buf_len: usize,
-    out_len: *mut usize,
-) -> PackFfiError {
-    if record.is_null() || plaintext.is_null() {
-        return PackFfiError::InvalidArgument;
-    }
-    let pt = slice::from_raw_parts(plaintext, plaintext_len);
-    let rec = &mut *record;
-    match group::group_encrypt(rec, pt) {
-        Ok(msg) => {
-            let bytes = msg.to_bytes();
-            if !handles::write_bytes(&bytes, out_buf, buf_len, out_len) {
-                return PackFfiError::InvalidArgument;
-            }
-            PackFfiError::Ok
-        }
-        Err(e) => PackFfiError::from(e),
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn pack_group_decrypt(
-    record: *mut SenderKeyRecord,
-    ciphertext: *const u8,
-    ciphertext_len: usize,
-    out_buf: *mut u8,
-    buf_len: usize,
-    out_len: *mut usize,
-) -> PackFfiError {
-    if record.is_null() || ciphertext.is_null() {
-        return PackFfiError::InvalidArgument;
-    }
-    let ct = slice::from_raw_parts(ciphertext, ciphertext_len);
-    let msg = match SenderKeyMessage::from_bytes(ct) {
-        Ok(m) => m,
-        Err(e) => return PackFfiError::from(e),
-    };
-    let rec = &mut *record;
-    match group::group_decrypt(rec, &msg) {
-        Ok(pt) => {
-            if !handles::write_bytes(&pt, out_buf, buf_len, out_len) {
-                return PackFfiError::InvalidArgument;
-            }
-            PackFfiError::Ok
-        }
-        Err(e) => PackFfiError::from(e),
-    }
-}
+// pack_group_encrypt and pack_group_decrypt removed:
+// group messages must go through sealed sender. Use the high-level
+// PackSealedSender::encrypt_group_message / unseal_group_message API.

@@ -358,67 +358,9 @@ pub unsafe extern "system" fn Java_org_pack_protocol_PackGroupSession_nativeDest
     destroy_handle::<PackGroupSession>(handle);
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn Java_org_pack_protocol_PackGroupSession_nativeEncrypt<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass,
-    handle: jlong,
-    plaintext: JByteArray<'local>,
-) -> jbyteArray {
-    let session: &mut PackGroupSession = match from_handle_mut(handle) {
-        Some(s) => s,
-        None => {
-            let _ = throw_error(&mut env, "Invalid group session handle");
-            return std::ptr::null_mut();
-        }
-    };
-    let pt = match env.convert_byte_array(&plaintext) {
-        Ok(b) => b,
-        Err(_) => return std::ptr::null_mut(),
-    };
-
-    match session.encrypt(&pt) {
-        Ok(ct) => match env.byte_array_from_slice(&ct) {
-            Ok(arr) => arr.into_raw(),
-            Err(_) => std::ptr::null_mut(),
-        },
-        Err(e) => {
-            let _ = throw_error(&mut env, &e.to_string());
-            std::ptr::null_mut()
-        }
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn Java_org_pack_protocol_PackGroupSession_nativeDecrypt<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass,
-    handle: jlong,
-    ciphertext: JByteArray<'local>,
-) -> jbyteArray {
-    let session: &mut PackGroupSession = match from_handle_mut(handle) {
-        Some(s) => s,
-        None => {
-            let _ = throw_error(&mut env, "Invalid group session handle");
-            return std::ptr::null_mut();
-        }
-    };
-    let ct = match env.convert_byte_array(&ciphertext) {
-        Ok(b) => b,
-        Err(_) => return std::ptr::null_mut(),
-    };
-
-    match session.decrypt(&ct) {
-        Ok(pt) => match env.byte_array_from_slice(&pt) {
-            Ok(arr) => arr.into_raw(),
-            Err(_) => std::ptr::null_mut(),
-        },
-        Err(e) => {
-            let _ = throw_error(&mut env, &e.to_string());
-            std::ptr::null_mut()
-        }
-    }
-}
+// PackGroupSession.nativeEncrypt and nativeDecrypt removed:
+// Group messages must go through sealed sender. Use the high-level
+// PackSealedSender::encrypt_group_message / unseal_group_message API.
 
 // ── PackSession serialization ──
 
@@ -831,7 +773,7 @@ pub unsafe extern "system" fn Java_org_pack_protocol_PackSealedSender_nativeEncr
         signature: sig,
     };
 
-    match PackSealedSender::encrypt_message(session, &cert, &pt, current_time as u64) {
+    match PackSealedSender::encrypt_session_message(session, &cert, &pt, current_time as u64) {
         Ok(sealed) => match env.byte_array_from_slice(&sealed) {
             Ok(arr) => arr.into_raw(),
             Err(_) => std::ptr::null_mut(),
@@ -873,7 +815,7 @@ pub unsafe extern "system" fn Java_org_pack_protocol_PackSealedSender_nativeDecr
     let mut tr_arr = [0u8; 32];
     tr_arr.copy_from_slice(&tr);
 
-    match PackSealedSender::decrypt_message(session, &ct, &PublicKey::from_bytes(tr_arr), current_time as u64) {
+    match PackSealedSender::decrypt_session_message(session, &ct, &PublicKey::from_bytes(tr_arr), current_time as u64) {
         Ok(result) => match env.byte_array_from_slice(&result.plaintext) {
             Ok(arr) => arr.into_raw(),
             Err(_) => std::ptr::null_mut(),

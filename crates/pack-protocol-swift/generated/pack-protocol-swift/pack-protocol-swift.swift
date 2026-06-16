@@ -309,15 +309,6 @@ public class PackGroupSessionBridgeRefMut: PackGroupSessionBridgeRef {
         super.init(ptr: ptr)
     }
 }
-extension PackGroupSessionBridgeRefMut {
-    public func encrypt(_ plaintext: UnsafeBufferPointer<UInt8>) throws -> RustVec<UInt8> {
-        try { let val = __swift_bridge__$PackGroupSessionBridge$encrypt(ptr, plaintext.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
-    }
-
-    public func decrypt(_ ciphertext: UnsafeBufferPointer<UInt8>) throws -> RustVec<UInt8> {
-        try { let val = __swift_bridge__$PackGroupSessionBridge$decrypt(ptr, ciphertext.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
-    }
-}
 public class PackGroupSessionBridgeRef {
     var ptr: UnsafeMutableRawPointer
 

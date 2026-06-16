@@ -104,8 +104,6 @@ mod ffi {
             distribution_message: &[u8],
         ) -> Result<PackGroupSessionBridge, PackBridgeError>;
 
-        fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, PackBridgeError>;
-        fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, PackBridgeError>;
         fn distribution_message(&self) -> Option<Vec<u8>>;
         fn to_bytes(&self) -> Vec<u8>;
 
@@ -481,14 +479,6 @@ impl PackGroupSessionBridge {
         })
     }
 
-    fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ffi::PackBridgeError> {
-        map_err(self.inner.encrypt(plaintext))
-    }
-
-    fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, ffi::PackBridgeError> {
-        map_err(self.inner.decrypt(ciphertext))
-    }
-
     fn distribution_message(&self) -> Option<Vec<u8>> {
         self.distribution_message.clone()
     }
@@ -661,7 +651,7 @@ impl PackSealedSenderBridge {
             signature: cert_signature.to_vec(),
         };
 
-        map_err(api::PackSealedSender::encrypt_message(
+        map_err(api::PackSealedSender::encrypt_session_message(
             &mut session.inner,
             &cert,
             plaintext,
@@ -681,7 +671,7 @@ impl PackSealedSenderBridge {
                 .map_err(|_| ffi::PackBridgeError::InvalidKey("trust root must be 32 bytes".into()))?,
         );
 
-        let result = map_err(api::PackSealedSender::decrypt_message(
+        let result = map_err(api::PackSealedSender::decrypt_session_message(
             &mut session.inner,
             ciphertext,
             &trust_root_key,

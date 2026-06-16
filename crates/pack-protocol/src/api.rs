@@ -518,7 +518,9 @@ impl PackGroupSession {
     /// Encrypt a message for the group (sender only).
     ///
     /// Returns serialized SenderKeyMessage bytes.
-    pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
+    /// Use `PackSealedSender::encrypt_message()` instead — it wraps the
+    /// output in sealed sender per recipient, which is required by the protocol.
+    pub(crate) fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
         let msg = group::group_encrypt(&mut self.record, plaintext)?;
         Ok(msg.to_bytes())
     }
@@ -526,7 +528,9 @@ impl PackGroupSession {
     /// Decrypt a group message (receiver).
     ///
     /// Takes serialized SenderKeyMessage bytes, returns plaintext.
-    pub fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+    /// Use `PackSealedSender::decrypt_message` + `SealedEnvelope::decrypt`
+    /// instead — incoming messages must always be sealed sender wrapped.
+    pub(crate) fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>> {
         let msg = SenderKeyMessage::from_bytes(ciphertext)?;
         group::group_decrypt(&mut self.record, &msg)
     }
@@ -586,6 +590,39 @@ impl PackGroupSession {
     }
 }
 
+// ── Sealed Sender message types ──
+
+pub struct Recipient<'a> {
+    pub address: &'a ProtocolAddress,
+    pub identity: &'a IdentityKey,
+}
+
+pub struct SealedBlob {
+    pub recipient: ProtocolAddress,
+    pub ciphertext: Vec<u8>,
+}
+
+pub struct SealedEnvelope {
+    pub sender_uuid: String,
+    pub sender_device_id: u32,
+    inner: Vec<u8>,
+}
+
+impl SealedEnvelope {
+    pub fn sender_uuid(&self) -> &str {
+        &self.sender_uuid
+    }
+
+    pub fn sender_device_id(&self) -> u32 {
+        self.sender_device_id
+    }
+
+    pub fn decrypt(self, group_session: &mut PackGroupSession) -> Result<Vec<u8>> {
+        let msg = SenderKeyMessage::from_bytes(&self.inner)?;
+        group::group_decrypt(&mut group_session.record, &msg)
+    }
+}
+
 // ── PackSealedSender ──
 
 pub struct PackSealedSender;
@@ -637,11 +674,65 @@ impl PackSealedSender {
         sealed_sender::sealed_sender_decrypt_raw_cert(our_identity, ciphertext, trust_root, current_time)
     }
 
-    /// Composed encrypt: session cipher (double ratchet) then sealed sender (Noise NK).
+    /// Encrypt a message for all recipients.
     ///
-    /// Plaintext → PackSession::encrypt → sealed_sender_encrypt → envelope bytes.
-    /// Gives forward secrecy from the ratchet plus sender anonymity from sealed sender.
+    /// Sender key encrypts the plaintext once, then wraps it in a sealed sender
+    /// envelope per recipient. Returns one sealed blob per recipient for delivery.
     pub fn encrypt_message(
+        group_session: &mut PackGroupSession,
+        sender_identity: &IdentityKeyPair,
+        sender_certificate: &SenderCertificate,
+        recipients: &[Recipient],
+        plaintext: &[u8],
+        current_time: u64,
+    ) -> Result<Vec<SealedBlob>> {
+        let sender_key_msg = group::group_encrypt(&mut group_session.record, plaintext)?;
+        let sender_key_bytes = sender_key_msg.to_bytes();
+
+        let mut result = Vec::with_capacity(recipients.len());
+        for r in recipients {
+            let sealed = sealed_sender::sealed_sender_encrypt(
+                sender_identity,
+                sender_certificate,
+                r.identity,
+                &sender_key_bytes,
+                current_time,
+            )?;
+            result.push(SealedBlob {
+                recipient: r.address.clone(),
+                ciphertext: sealed,
+            });
+        }
+
+        Ok(result)
+    }
+
+    /// Unseal an incoming message.
+    ///
+    /// Removes the sealed sender envelope, revealing the sender's identity and
+    /// an opaque inner ciphertext. Call `SealedEnvelope::decrypt` with the
+    /// appropriate group session to recover the plaintext.
+    pub fn decrypt_message(
+        our_identity: &IdentityKeyPair,
+        ciphertext: &[u8],
+        trust_root: &PublicKey,
+        current_time: u64,
+    ) -> Result<SealedEnvelope> {
+        let result = sealed_sender::sealed_sender_decrypt(
+            our_identity,
+            ciphertext,
+            trust_root,
+            current_time,
+        )?;
+        Ok(SealedEnvelope {
+            sender_uuid: result.sender_uuid,
+            sender_device_id: result.sender_device_id,
+            inner: result.plaintext,
+        })
+    }
+
+    /// Composed encrypt for 1:1 SKDM delivery: session cipher then sealed sender.
+    pub fn encrypt_session_message(
         session: &mut PackSession,
         sender_certificate: &SenderCertificate,
         plaintext: &[u8],
@@ -657,11 +748,8 @@ impl PackSealedSender {
         )
     }
 
-    /// Composed decrypt: sealed sender (Noise NK) then session cipher (double ratchet).
-    ///
-    /// Envelope bytes → sealed_sender_decrypt → PackSession::decrypt → plaintext.
-    /// Returns sender info alongside the decrypted plaintext.
-    pub fn decrypt_message(
+    /// Composed decrypt for 1:1 SKDM delivery: sealed sender then session cipher.
+    pub fn decrypt_session_message(
         session: &mut PackSession,
         ciphertext: &[u8],
         trust_root: &PublicKey,
@@ -1091,7 +1179,7 @@ mod tests {
         alice_cert.signature = sig.to_vec();
 
         // Alice sends a composed sealed+session message
-        let envelope = PackSealedSender::encrypt_message(
+        let envelope = PackSealedSender::encrypt_session_message(
             &mut alice,
             &alice_cert,
             b"sealed ratchet hello",
@@ -1099,7 +1187,7 @@ mod tests {
         ).unwrap();
 
         // Bob decrypts the composed message
-        let result = PackSealedSender::decrypt_message(
+        let result = PackSealedSender::decrypt_session_message(
             &mut bob,
             &envelope,
             &server_kp.public,
@@ -1113,14 +1201,14 @@ mod tests {
         // Verify multiple messages work (ratchet advances correctly)
         for i in 0..5 {
             let msg = format!("sealed msg {i}");
-            let env = PackSealedSender::encrypt_message(
+            let env = PackSealedSender::encrypt_session_message(
                 &mut alice,
                 &alice_cert,
                 msg.as_bytes(),
                 1000,
             ).unwrap();
 
-            let res = PackSealedSender::decrypt_message(
+            let res = PackSealedSender::decrypt_session_message(
                 &mut bob,
                 &env,
                 &server_kp.public,
@@ -1178,5 +1266,149 @@ mod tests {
         assert!(PackFingerprint::verify_scanned(
             &bob_fp.scannable, &alice_fp.scannable
         ).unwrap());
+    }
+
+    #[test]
+    fn test_sealed_group_message_roundtrip() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let carol_identity = IdentityKeyPair::generate();
+        let server_kp = KeyPair::generate();
+
+        let server_cert = sealed_sender::ServerCertificate {
+            key: server_kp.public.clone(),
+            id: 1,
+        };
+        let mut alice_cert = SenderCertificate {
+            sender_uuid: "alice-uuid".to_string(),
+            sender_device_id: 1,
+            sender_identity: alice_identity.public.clone(),
+            expiration: 2000,
+            server_certificate: server_cert,
+            signature: Vec::new(),
+        };
+        let content = alice_cert.serialize_content();
+        let sig = curve::xeddsa_sign(&server_kp.private, &content);
+        alice_cert.signature = sig.to_vec();
+
+        // Alice creates a sender group session
+        let (mut alice_group, dist_bytes) =
+            PackGroupSession::create_sender("group-1").unwrap();
+
+        // Bob and Carol receive the distribution message
+        let mut bob_group =
+            PackGroupSession::create_receiver("group-1", &dist_bytes).unwrap();
+        let mut carol_group =
+            PackGroupSession::create_receiver("group-1", &dist_bytes).unwrap();
+
+        let bob_addr = ProtocolAddress::new("bob".to_string(), 1);
+        let carol_addr = ProtocolAddress::new("carol".to_string(), 1);
+
+        let recipients = vec![
+            Recipient { address: &bob_addr, identity: &bob_identity.public },
+            Recipient { address: &carol_addr, identity: &carol_identity.public },
+        ];
+
+        // Alice encrypts a group message
+        let sealed_blobs = PackSealedSender::encrypt_message(
+            &mut alice_group,
+            &alice_identity,
+            &alice_cert,
+            &recipients,
+            b"hello group!",
+            1000,
+        ).unwrap();
+
+        assert_eq!(sealed_blobs.len(), 2);
+        assert_eq!(sealed_blobs[0].recipient.name, "bob");
+        assert_eq!(sealed_blobs[1].recipient.name, "carol");
+
+        // Bob decrypts
+        let bob_envelope = PackSealedSender::decrypt_message(
+            &bob_identity,
+            &sealed_blobs[0].ciphertext,
+            &server_kp.public,
+            1000,
+        ).unwrap();
+        assert_eq!(bob_envelope.sender_uuid(), "alice-uuid");
+        assert_eq!(bob_envelope.sender_device_id(), 1);
+        let bob_plaintext = bob_envelope.decrypt(&mut bob_group).unwrap();
+        assert_eq!(bob_plaintext, b"hello group!");
+
+        // Carol decrypts
+        let carol_envelope = PackSealedSender::decrypt_message(
+            &carol_identity,
+            &sealed_blobs[1].ciphertext,
+            &server_kp.public,
+            1000,
+        ).unwrap();
+        assert_eq!(carol_envelope.sender_uuid(), "alice-uuid");
+        let carol_plaintext = carol_envelope.decrypt(&mut carol_group).unwrap();
+        assert_eq!(carol_plaintext, b"hello group!");
+
+        // Multiple messages work (sender key chain advances)
+        for i in 0..5 {
+            let msg = format!("group msg {i}");
+            let blobs = PackSealedSender::encrypt_message(
+                &mut alice_group,
+                &alice_identity,
+                &alice_cert,
+                &recipients,
+                msg.as_bytes(),
+                1000,
+            ).unwrap();
+
+            let env = PackSealedSender::decrypt_message(
+                &bob_identity, &blobs[0].ciphertext, &server_kp.public, 1000,
+            ).unwrap();
+            assert_eq!(env.decrypt(&mut bob_group).unwrap(), msg.as_bytes());
+
+            let env = PackSealedSender::decrypt_message(
+                &carol_identity, &blobs[1].ciphertext, &server_kp.public, 1000,
+            ).unwrap();
+            assert_eq!(env.decrypt(&mut carol_group).unwrap(), msg.as_bytes());
+        }
+    }
+
+    #[test]
+    fn test_sealed_group_wrong_recipient_fails() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let eve_identity = IdentityKeyPair::generate();
+        let server_kp = KeyPair::generate();
+
+        let server_cert = sealed_sender::ServerCertificate {
+            key: server_kp.public.clone(),
+            id: 1,
+        };
+        let mut alice_cert = SenderCertificate {
+            sender_uuid: "alice-uuid".to_string(),
+            sender_device_id: 1,
+            sender_identity: alice_identity.public.clone(),
+            expiration: 2000,
+            server_certificate: server_cert,
+            signature: Vec::new(),
+        };
+        let content = alice_cert.serialize_content();
+        let sig = curve::xeddsa_sign(&server_kp.private, &content);
+        alice_cert.signature = sig.to_vec();
+
+        let (mut alice_group, _dist_bytes) =
+            PackGroupSession::create_sender("group-1").unwrap();
+        let bob_addr = ProtocolAddress::new("bob".to_string(), 1);
+        let recipients = vec![
+            Recipient { address: &bob_addr, identity: &bob_identity.public },
+        ];
+
+        let blobs = PackSealedSender::encrypt_message(
+            &mut alice_group, &alice_identity, &alice_cert,
+            &recipients, b"for bob only", 1000,
+        ).unwrap();
+
+        // Eve tries to unseal Bob's blob — should fail (wrong identity key)
+        let result = PackSealedSender::decrypt_message(
+            &eve_identity, &blobs[0].ciphertext, &server_kp.public, 1000,
+        );
+        assert!(result.is_err());
     }
 }

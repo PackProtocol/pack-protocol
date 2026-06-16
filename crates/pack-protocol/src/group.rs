@@ -321,7 +321,7 @@ impl SenderKeyMessage {
 }
 
 /// Encrypt a message using the sender's key chain for a group.
-pub fn group_encrypt(
+pub(crate) fn group_encrypt(
     record: &mut SenderKeyRecord,
     plaintext: &[u8],
 ) -> Result<SenderKeyMessage> {
@@ -363,7 +363,7 @@ pub fn group_encrypt(
 }
 
 /// Decrypt a group message using the stored sender key for the sender.
-pub fn group_decrypt(
+pub(crate) fn group_decrypt(
     record: &mut SenderKeyRecord,
     message: &SenderKeyMessage,
 ) -> Result<Vec<u8>> {
