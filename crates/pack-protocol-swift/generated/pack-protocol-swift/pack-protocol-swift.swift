@@ -297,6 +297,12 @@ extension PackGroupSessionBridge {
     class public func from_bytes(_ data: UnsafeBufferPointer<UInt8>) throws -> PackGroupSessionBridge {
         try { let val = __swift_bridge__$PackGroupSessionBridge$from_bytes(data.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError$ResultOk: return PackGroupSessionBridge(ptr: val.payload.ok) case __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
     }
+
+    class public func from_distribution<GenericToRustStr: ToRustStr>(_ distribution_id: GenericToRustStr, _ skdm_bytes: UnsafeBufferPointer<UInt8>) throws -> PackGroupSessionBridge {
+        return try distribution_id.toRustStr({ distribution_idAsRustStr in
+            try { let val = __swift_bridge__$PackGroupSessionBridge$from_distribution(distribution_idAsRustStr, skdm_bytes.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError$ResultOk: return PackGroupSessionBridge(ptr: val.payload.ok) case __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
+        })
+    }
 }
 public class PackGroupSessionBridgeRefMut: PackGroupSessionBridgeRef {
     public override init(ptr: UnsafeMutableRawPointer) {

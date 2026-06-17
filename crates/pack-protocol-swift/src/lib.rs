@@ -104,6 +104,12 @@ mod ffi {
 
         #[swift_bridge(associated_to = PackGroupSessionBridge)]
         fn from_bytes(data: &[u8]) -> Result<PackGroupSessionBridge, PackBridgeError>;
+
+        #[swift_bridge(associated_to = PackGroupSessionBridge)]
+        fn from_distribution(
+            distribution_id: &str,
+            skdm_bytes: &[u8],
+        ) -> Result<PackGroupSessionBridge, PackBridgeError>;
     }
 
     extern "Rust" {
@@ -506,6 +512,17 @@ impl PackGroupSessionBridge {
 
     fn from_bytes(data: &[u8]) -> Result<Self, ffi::PackBridgeError> {
         let session = map_err(api::PackGroupSession::from_bytes(data))?;
+        Ok(Self {
+            inner: session,
+            distribution_message: None,
+        })
+    }
+
+    fn from_distribution(
+        distribution_id: &str,
+        skdm_bytes: &[u8],
+    ) -> Result<Self, ffi::PackBridgeError> {
+        let session = map_err(api::PackGroupSession::from_distribution(distribution_id, skdm_bytes))?;
         Ok(Self {
             inner: session,
             distribution_message: None,
