@@ -13,9 +13,8 @@ use jni::sys::{jbyteArray, jlong};
 
 use pack_protocol::keys::{IdentityKeyPair, IdentityKey};
 use pack_protocol::fingerprint;
-use pack_protocol::group;
 
-use convert::{to_handle, from_handle, from_handle_mut, destroy_handle, throw_error};
+use convert::{to_handle, from_handle, destroy_handle, throw_error};
 
 // ── IdentityKeyPair ──
 
@@ -168,66 +167,7 @@ pub unsafe extern "system" fn Java_org_pack_protocol_Fingerprint_nativeGenerate<
     }
 }
 
-// ── Group (Sender Key) ──
-
-#[no_mangle]
-pub extern "system" fn Java_org_pack_protocol_GroupCipher_nativeCreateRecord(
-    _env: JNIEnv,
-    _class: JClass,
-) -> jlong {
-    to_handle(group::SenderKeyRecord::new())
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn Java_org_pack_protocol_GroupCipher_nativeDestroyRecord(
-    _env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-) {
-    destroy_handle::<group::SenderKeyRecord>(handle);
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn Java_org_pack_protocol_GroupCipher_nativeCreateDistributionMessage<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass,
-    record_handle: jlong,
-    distribution_id: JByteArray<'local>,
-) -> jbyteArray {
-    let record: &mut group::SenderKeyRecord = match from_handle_mut(record_handle) {
-        Some(r) => r,
-        None => {
-            let _ = throw_error(&mut env, "Invalid handle");
-            return std::ptr::null_mut();
-        }
-    };
-    let dist_id_bytes = match env.convert_byte_array(&distribution_id) {
-        Ok(b) => b,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    let dist_id = match std::str::from_utf8(&dist_id_bytes) {
-        Ok(s) => s,
-        Err(_) => {
-            let _ = throw_error(&mut env, "Invalid UTF-8 in distribution ID");
-            return std::ptr::null_mut();
-        }
-    };
-
-    match group::create_sender_key_distribution_message(dist_id, record) {
-        Ok(msg) => {
-            let bytes = msg.to_bytes();
-            match env.byte_array_from_slice(&bytes) {
-                Ok(arr) => arr.into_raw(),
-                Err(_) => std::ptr::null_mut(),
-            }
-        }
-        Err(e) => {
-            let _ = throw_error(&mut env, &e.to_string());
-            std::ptr::null_mut()
-        }
-    }
-}
-
-// GroupCipher.nativeEncrypt and nativeDecrypt removed:
-// Group messages must go through sealed sender. Use the high-level
-// PackSealedSender::encrypt_group_message / unseal_group_message API.
+// Low-level group primitives (GroupCipher.nativeCreateRecord,
+// nativeCreateDistributionMessage, nativeEncrypt, nativeDecrypt) removed:
+// Use PackGroupSession.nativeCreateSender and PackGroupSession.fromDistribution
+// through the high-level API.

@@ -181,26 +181,6 @@ enum PackFfiError pack_scannable_fingerprint_verify(const uint8_t *ours,
                                                     uintptr_t theirs_len,
                                                     bool *out_match);
 
-enum PackFfiError pack_sender_key_record_create(SenderKeyRecord **out);
-
-void pack_sender_key_record_destroy(SenderKeyRecord *handle);
-
-enum PackFfiError pack_create_sender_key_distribution_message(const uint8_t *distribution_id,
-                                                              uintptr_t distribution_id_len,
-                                                              SenderKeyRecord *record,
-                                                              SenderKeyDistributionMessage **out);
-
-void pack_sender_key_distribution_message_destroy(SenderKeyDistributionMessage *handle);
-
-enum PackFfiError pack_sender_key_distribution_message_serialize(const SenderKeyDistributionMessage *handle,
-                                                                 uint8_t *out_buf,
-                                                                 uintptr_t buf_len,
-                                                                 uintptr_t *out_len);
-
-enum PackFfiError pack_process_sender_key_distribution_message(SenderKeyRecord *record,
-                                                               const uint8_t *message_data,
-                                                               uintptr_t message_len);
-
 enum PackFfiError pack_sealed_sender_encrypt(const IdentityKeyPair *sender_identity,
                                              const uint8_t *sender_cert_data,
                                              uintptr_t sender_cert_len,

@@ -239,7 +239,7 @@ impl SenderKeyRecord {
 
 /// Create a new sender key distribution message for a group.
 /// The caller is the sender establishing their chain for this group.
-pub fn create_sender_key_distribution_message(
+pub(crate) fn create_sender_key_distribution_message(
     distribution_id: &str,
     record: &mut SenderKeyRecord,
 ) -> Result<SenderKeyDistributionMessage> {
@@ -269,7 +269,7 @@ pub fn create_sender_key_distribution_message(
 
 /// Process a received sender key distribution message.
 /// Stores the sender's chain so we can decrypt their future group messages.
-pub fn process_sender_key_distribution_message(
+pub(crate) fn process_sender_key_distribution_message(
     record: &mut SenderKeyRecord,
     message: &SenderKeyDistributionMessage,
 ) {
