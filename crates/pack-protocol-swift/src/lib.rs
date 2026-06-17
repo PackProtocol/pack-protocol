@@ -99,6 +99,7 @@ mod ffi {
             distribution_id: &str,
         ) -> Result<PackGroupSessionBridge, PackBridgeError>;
 
+        fn encrypt_for_send(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, PackBridgeError>;
         fn distribution_message(&self) -> Option<Vec<u8>>;
         fn to_bytes(&self) -> Vec<u8>;
 
@@ -500,6 +501,10 @@ impl PackGroupSessionBridge {
             inner: session,
             distribution_message: Some(skdm.as_bytes().to_vec()),
         })
+    }
+
+    fn encrypt_for_send(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ffi::PackBridgeError> {
+        map_err(self.inner.encrypt_for_send(plaintext))
     }
 
     fn distribution_message(&self) -> Option<Vec<u8>> {

@@ -94,6 +94,7 @@ struct __swift_bridge__$ResultPackSessionBridgeAndPackBridgeError __swift_bridge
 struct __swift_bridge__$ResultVec_U8AndPackBridgeError __swift_bridge__$PackSessionBridge$to_bytes_encrypted(void* self, struct __private__FfiSlice storage_key);
 struct __swift_bridge__$ResultPackSessionBridgeAndPackBridgeError __swift_bridge__$PackSessionBridge$from_bytes_encrypted(struct __private__FfiSlice data, struct __private__FfiSlice storage_key);
 struct __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError __swift_bridge__$PackGroupSessionBridge$create_sender(struct RustStr distribution_id);
+struct __swift_bridge__$ResultVec_U8AndPackBridgeError __swift_bridge__$PackGroupSessionBridge$encrypt_for_send(void* self, struct __private__FfiSlice plaintext);
 void* __swift_bridge__$PackGroupSessionBridge$distribution_message(void* self);
 void* __swift_bridge__$PackGroupSessionBridge$to_bytes(void* self);
 struct __swift_bridge__$ResultPackGroupSessionBridgeAndPackBridgeError __swift_bridge__$PackGroupSessionBridge$from_bytes(struct __private__FfiSlice data);

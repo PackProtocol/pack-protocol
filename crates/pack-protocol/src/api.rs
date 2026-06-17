@@ -546,6 +546,14 @@ impl PackGroupSession {
         group::group_decrypt(&mut self.record, &msg)
     }
 
+    /// Encrypt plaintext with the sender key, returning inner ciphertext.
+    /// Call once, then wrap the result with `PackSealedSender::encrypt` per
+    /// recipient. This advances the chain exactly once regardless of
+    /// recipient count.
+    pub fn encrypt_for_send(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        self.encrypt(plaintext)
+    }
+
     pub fn distribution_id(&self) -> &str {
         &self.distribution_id
     }
