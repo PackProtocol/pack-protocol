@@ -754,6 +754,38 @@ impl PackSealedSender {
         Ok(result)
     }
 
+    /// Like `encrypt_message` but takes raw cert bytes instead of a
+    /// `SenderCertificate`. For clients that store the server-issued
+    /// certificate as an opaque blob.
+    pub fn encrypt_message_raw_cert(
+        group_session: &mut PackGroupSession,
+        sender_identity: &IdentityKeyPair,
+        raw_cert_blob: &[u8],
+        recipients: &[Recipient],
+        plaintext: &[u8],
+        current_time: u64,
+    ) -> Result<Vec<SealedBlob>> {
+        let sender_key_msg = group::group_encrypt(&mut group_session.record, plaintext)?;
+        let sender_key_bytes = sender_key_msg.to_bytes();
+
+        let mut result = Vec::with_capacity(recipients.len());
+        for r in recipients {
+            let sealed = sealed_sender::sealed_sender_encrypt_raw_cert(
+                sender_identity,
+                raw_cert_blob,
+                r.identity,
+                &sender_key_bytes,
+                current_time,
+            )?;
+            result.push(SealedBlob {
+                recipient: r.address.clone(),
+                ciphertext: sealed,
+            });
+        }
+
+        Ok(result)
+    }
+
     /// Unseal an incoming message.
     ///
     /// Removes the sealed sender envelope, revealing the sender's identity and
