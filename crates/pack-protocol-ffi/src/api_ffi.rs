@@ -222,11 +222,11 @@ pub unsafe extern "C" fn pack_group_session_create_sender(
     };
 
     match PackGroupSession::create_sender(dist_id) {
-        Ok((session, dist_bytes)) => {
+        Ok((session, skdm)) => {
             if !handles::write_out(out_session, session) {
                 return PackFfiError::InvalidArgument;
             }
-            if !handles::write_bytes(&dist_bytes, out_dist_buf, dist_buf_len, out_dist_len) {
+            if !handles::write_bytes(skdm.as_bytes(), out_dist_buf, dist_buf_len, out_dist_len) {
                 return PackFfiError::InvalidArgument;
             }
             PackFfiError::Ok
@@ -235,36 +235,8 @@ pub unsafe extern "C" fn pack_group_session_create_sender(
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn pack_group_session_create_receiver(
-    distribution_id: *const u8,
-    distribution_id_len: usize,
-    distribution_message: *const u8,
-    distribution_message_len: usize,
-    out_session: *mut *mut PackGroupSession,
-) -> PackFfiError {
-    if distribution_id.is_null() || distribution_message.is_null() {
-        return PackFfiError::InvalidArgument;
-    }
-    let dist_id = match std::str::from_utf8(slice::from_raw_parts(
-        distribution_id,
-        distribution_id_len,
-    )) {
-        Ok(s) => s,
-        Err(_) => return PackFfiError::InvalidArgument,
-    };
-    let msg = slice::from_raw_parts(distribution_message, distribution_message_len);
-
-    match PackGroupSession::create_receiver(dist_id, msg) {
-        Ok(session) => {
-            if !handles::write_out(out_session, session) {
-                return PackFfiError::InvalidArgument;
-            }
-            PackFfiError::Ok
-        }
-        Err(e) => PackFfiError::from(e),
-    }
-}
+// pack_group_session_create_receiver removed: receiver creation now goes
+// through the sealed sender receive_sender_key path.
 
 #[no_mangle]
 pub unsafe extern "C" fn pack_group_session_destroy(handle: *mut PackGroupSession) {

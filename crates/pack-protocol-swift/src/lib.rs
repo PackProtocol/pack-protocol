@@ -98,12 +98,6 @@ mod ffi {
             distribution_id: &str,
         ) -> Result<PackGroupSessionBridge, PackBridgeError>;
 
-        #[swift_bridge(associated_to = PackGroupSessionBridge)]
-        fn create_receiver(
-            distribution_id: &str,
-            distribution_message: &[u8],
-        ) -> Result<PackGroupSessionBridge, PackBridgeError>;
-
         fn distribution_message(&self) -> Option<Vec<u8>>;
         fn to_bytes(&self) -> Vec<u8>;
 
@@ -158,7 +152,7 @@ mod ffi {
         ) -> Result<SealedSenderDecryptResult, PackBridgeError>;
 
         #[swift_bridge(associated_to = PackSealedSenderBridge)]
-        fn sealed_encrypt_message(
+        fn distribute_sender_key(
             session: &mut PackSessionBridge,
             sender_uuid: &str,
             sender_device_id: u32,
@@ -166,17 +160,18 @@ mod ffi {
             server_cert_id: u32,
             cert_expiration: u64,
             cert_signature: &[u8],
-            plaintext: &[u8],
+            skdm_bytes: &[u8],
             current_time: u64,
         ) -> Result<Vec<u8>, PackBridgeError>;
 
         #[swift_bridge(associated_to = PackSealedSenderBridge)]
-        fn sealed_decrypt_message(
+        fn receive_sender_key(
             session: &mut PackSessionBridge,
             ciphertext: &[u8],
             trust_root: &[u8],
             current_time: u64,
-        ) -> Result<SealedSenderDecryptResult, PackBridgeError>;
+            distribution_id: &str,
+        ) -> Result<PackGroupSessionBridge, PackBridgeError>;
     }
 
     #[swift_bridge(swift_repr = "struct")]
@@ -460,22 +455,10 @@ impl PackGroupSessionBridge {
     fn create_sender(
         distribution_id: &str,
     ) -> Result<Self, ffi::PackBridgeError> {
-        let (session, dist_msg) = map_err(api::PackGroupSession::create_sender(distribution_id))?;
+        let (session, skdm) = map_err(api::PackGroupSession::create_sender(distribution_id))?;
         Ok(Self {
             inner: session,
-            distribution_message: Some(dist_msg),
-        })
-    }
-
-    fn create_receiver(
-        distribution_id: &str,
-        distribution_message: &[u8],
-    ) -> Result<Self, ffi::PackBridgeError> {
-        let session =
-            map_err(api::PackGroupSession::create_receiver(distribution_id, distribution_message))?;
-        Ok(Self {
-            inner: session,
-            distribution_message: None,
+            distribution_message: Some(skdm.as_bytes().to_vec()),
         })
     }
 
@@ -626,7 +609,7 @@ impl PackSealedSenderBridge {
         })
     }
 
-    fn sealed_encrypt_message(
+    fn distribute_sender_key(
         session: &mut PackSessionBridge,
         sender_uuid: &str,
         sender_device_id: u32,
@@ -634,7 +617,7 @@ impl PackSealedSenderBridge {
         server_cert_id: u32,
         cert_expiration: u64,
         cert_signature: &[u8],
-        plaintext: &[u8],
+        skdm_bytes: &[u8],
         current_time: u64,
     ) -> Result<Vec<u8>, ffi::PackBridgeError> {
         let server_pub = PublicKey::from_bytes(
@@ -651,37 +634,40 @@ impl PackSealedSenderBridge {
             signature: cert_signature.to_vec(),
         };
 
-        map_err(api::PackSealedSender::encrypt_session_message(
+        let skdm = api::SenderKeyDistribution::from_bytes(skdm_bytes.to_vec());
+
+        map_err(api::PackSealedSender::distribute_sender_key(
             &mut session.inner,
             &cert,
-            plaintext,
+            &skdm,
             current_time,
         ))
     }
 
-    fn sealed_decrypt_message(
+    fn receive_sender_key(
         session: &mut PackSessionBridge,
         ciphertext: &[u8],
         trust_root: &[u8],
         current_time: u64,
-    ) -> Result<ffi::SealedSenderDecryptResult, ffi::PackBridgeError> {
+        distribution_id: &str,
+    ) -> Result<PackGroupSessionBridge, ffi::PackBridgeError> {
         let trust_root_key = PublicKey::from_bytes(
             trust_root
                 .try_into()
                 .map_err(|_| ffi::PackBridgeError::InvalidKey("trust root must be 32 bytes".into()))?,
         );
 
-        let result = map_err(api::PackSealedSender::decrypt_session_message(
+        let (_result, group_session) = map_err(api::PackSealedSender::receive_sender_key(
             &mut session.inner,
             ciphertext,
             &trust_root_key,
             current_time,
+            distribution_id,
         ))?;
 
-        Ok(ffi::SealedSenderDecryptResult {
-            sender_uuid: result.sender_uuid,
-            sender_device_id: result.sender_device_id,
-            plaintext: result.plaintext,
+        Ok(PackGroupSessionBridge {
+            inner: group_session,
+            distribution_message: None,
         })
     }
 }

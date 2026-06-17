@@ -314,12 +314,6 @@ enum PackFfiError pack_group_session_create_sender(const uint8_t *distribution_i
                                                    uintptr_t dist_buf_len,
                                                    uintptr_t *out_dist_len);
 
-enum PackFfiError pack_group_session_create_receiver(const uint8_t *distribution_id,
-                                                     uintptr_t distribution_id_len,
-                                                     const uint8_t *distribution_message,
-                                                     uintptr_t distribution_message_len,
-                                                     PackGroupSession **out_session);
-
 void pack_group_session_destroy(PackGroupSession *handle);
 
 enum PackFfiError pack_sealed_sender_encrypt_msg(const IdentityKeyPair *sender_identity,

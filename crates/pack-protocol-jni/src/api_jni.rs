@@ -2,7 +2,7 @@ use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jbyteArray, jint, jlong};
 
-use pack_protocol::api::{PackGroupSession, PackSealedSender, PackSession};
+use pack_protocol::api::{PackGroupSession, PackSealedSender, PackSession, SenderKeyDistribution};
 use pack_protocol::crypto::curve::{PrivateKey, PublicKey};
 use pack_protocol::keys::{IdentityKey, IdentityKeyPair, OneTimePreKey, PreKeyBundle, SignedPreKey};
 use pack_protocol::sealed_sender::{SenderCertificate, ServerCertificate};
@@ -308,7 +308,7 @@ pub unsafe extern "system" fn Java_org_pack_protocol_PackGroupSession_nativeCrea
     };
 
     match PackGroupSession::create_sender(&dist_id) {
-        Ok((_session, dist_bytes)) => match env.byte_array_from_slice(&dist_bytes) {
+        Ok((_session, skdm)) => match env.byte_array_from_slice(skdm.as_bytes()) {
             Ok(arr) => arr.into_raw(),
             Err(_) => std::ptr::null_mut(),
         },
@@ -319,35 +319,8 @@ pub unsafe extern "system" fn Java_org_pack_protocol_PackGroupSession_nativeCrea
     }
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn Java_org_pack_protocol_PackGroupSession_nativeCreateReceiver<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _class: JClass,
-    distribution_id: JString<'local>,
-    distribution_message: JByteArray<'local>,
-) -> jlong {
-    let dist_id: String = match env.get_string(&distribution_id) {
-        Ok(s) => s.into(),
-        Err(_) => {
-            let _ = throw_error(&mut env, "Invalid distribution_id");
-            return 0;
-        }
-    };
-    let msg = match env.convert_byte_array(&distribution_message) {
-        Ok(b) => b,
-        Err(_) => return 0,
-    };
-
-    match PackGroupSession::create_receiver(&dist_id, &msg) {
-        Ok(session) => to_handle(session),
-        Err(e) => {
-            let _ = throw_error(&mut env, &e.to_string());
-            0
-        }
-    }
-}
+// nativeCreateReceiver removed: receiver creation now goes through
+// PackSealedSender::receive_sender_key which unseals and processes the SKDM.
 
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_pack_protocol_PackGroupSession_nativeDestroy(
@@ -722,7 +695,7 @@ pub unsafe extern "system" fn Java_org_pack_protocol_PackKeyGenerator_nativeDest
 // ── Sealed sender ──
 
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_pack_protocol_PackSealedSender_nativeEncryptMessage<'local>(
+pub unsafe extern "system" fn Java_org_pack_protocol_PackSealedSender_nativeDistributeSenderKey<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass,
     session_handle: jlong,
@@ -732,7 +705,7 @@ pub unsafe extern "system" fn Java_org_pack_protocol_PackSealedSender_nativeEncr
     server_cert_id: jint,
     cert_expiration: jlong,
     cert_signature: JByteArray<'local>,
-    plaintext: JByteArray<'local>,
+    skdm_bytes: JByteArray<'local>,
     current_time: jlong,
 ) -> jbyteArray {
     let session: &mut PackSession = match from_handle_mut(session_handle) {
@@ -752,7 +725,7 @@ pub unsafe extern "system" fn Java_org_pack_protocol_PackSealedSender_nativeEncr
         Ok(b) => b,
         Err(_) => return std::ptr::null_mut(),
     };
-    let pt = match env.convert_byte_array(&plaintext) {
+    let skdm = match env.convert_byte_array(&skdm_bytes) {
         Ok(b) => b,
         Err(_) => return std::ptr::null_mut(),
     };
@@ -773,7 +746,9 @@ pub unsafe extern "system" fn Java_org_pack_protocol_PackSealedSender_nativeEncr
         signature: sig,
     };
 
-    match PackSealedSender::encrypt_session_message(session, &cert, &pt, current_time as u64) {
+    let skdm = SenderKeyDistribution::from_bytes(skdm);
+
+    match PackSealedSender::distribute_sender_key(session, &cert, &skdm, current_time as u64) {
         Ok(sealed) => match env.byte_array_from_slice(&sealed) {
             Ok(arr) => arr.into_raw(),
             Err(_) => std::ptr::null_mut(),
@@ -785,47 +760,9 @@ pub unsafe extern "system" fn Java_org_pack_protocol_PackSealedSender_nativeEncr
     }
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn Java_org_pack_protocol_PackSealedSender_nativeDecryptMessage<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass,
-    session_handle: jlong,
-    ciphertext: JByteArray<'local>,
-    trust_root: JByteArray<'local>,
-    current_time: jlong,
-) -> jbyteArray {
-    let session: &mut PackSession = match from_handle_mut(session_handle) {
-        Some(s) => s,
-        None => { let _ = throw_error(&mut env, "Invalid session handle"); return std::ptr::null_mut(); }
-    };
-
-    let ct = match env.convert_byte_array(&ciphertext) {
-        Ok(b) => b,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    let tr = match env.convert_byte_array(&trust_root) {
-        Ok(b) => b,
-        Err(_) => return std::ptr::null_mut(),
-    };
-
-    if tr.len() != 32 {
-        let _ = throw_error(&mut env, "Trust root must be 32 bytes");
-        return std::ptr::null_mut();
-    }
-    let mut tr_arr = [0u8; 32];
-    tr_arr.copy_from_slice(&tr);
-
-    match PackSealedSender::decrypt_session_message(session, &ct, &PublicKey::from_bytes(tr_arr), current_time as u64) {
-        Ok(result) => match env.byte_array_from_slice(&result.plaintext) {
-            Ok(arr) => arr.into_raw(),
-            Err(_) => std::ptr::null_mut(),
-        },
-        Err(e) => {
-            let _ = throw_error(&mut env, &e.to_string());
-            std::ptr::null_mut()
-        }
-    }
-}
+// receive_sender_key requires returning both a SealedSenderResult and a
+// PackGroupSession — this must be orchestrated at the high-level API in
+// Kotlin/Java rather than through a single JNI call.
 
 // ── Helpers ──
 

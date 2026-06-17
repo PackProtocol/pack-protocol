@@ -485,9 +485,9 @@ pub struct PackGroupSession {
 impl PackGroupSession {
     /// Create a new group session as the sender.
     ///
-    /// Returns the session and the serialized SenderKeyDistributionMessage
-    /// to send to group members via 1:1 encrypted sessions.
-    pub fn create_sender(distribution_id: &str) -> Result<(Self, Vec<u8>)> {
+    /// Returns the session and a `SenderKeyDistribution` to deliver to
+    /// group members via `PackSealedSender::distribute_sender_key`.
+    pub fn create_sender(distribution_id: &str) -> Result<(Self, SenderKeyDistribution)> {
         let mut record = SenderKeyRecord::new();
         let dist_msg =
             group::create_sender_key_distribution_message(distribution_id, &mut record)?;
@@ -497,12 +497,14 @@ impl PackGroupSession {
                 record,
                 distribution_id: distribution_id.to_string(),
             },
-            bytes,
+            SenderKeyDistribution(bytes),
         ))
     }
 
     /// Create a group session as a receiver from a distribution message.
-    pub fn create_receiver(
+    /// Use `PackSealedSender::receive_sender_key` instead — incoming
+    /// SKDMs must always come through a sealed sender envelope.
+    pub(crate) fn create_receiver(
         distribution_id: &str,
         distribution_message: &[u8],
     ) -> Result<Self> {
@@ -587,6 +589,22 @@ impl PackGroupSession {
         nonce.copy_from_slice(&data[..12]);
         let plaintext = crate::crypto::aead::decrypt(storage_key, &nonce, &data[12..], b"pack-group-session")?;
         Self::from_bytes(&plaintext)
+    }
+}
+
+// ── Sender key distribution ──
+
+/// Opaque SKDM bytes produced by `PackGroupSession::create_sender`.
+/// Can only be consumed by `PackSealedSender::distribute_sender_key`.
+pub struct SenderKeyDistribution(Vec<u8>);
+
+impl SenderKeyDistribution {
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
     }
 }
 
@@ -731,14 +749,17 @@ impl PackSealedSender {
         })
     }
 
-    /// Composed encrypt for 1:1 SKDM delivery: session cipher then sealed sender.
-    pub fn encrypt_session_message(
+    /// Distribute a sender key to a recipient via sealed sender + 1:1 session.
+    ///
+    /// Takes the `SenderKeyDistribution` from `PackGroupSession::create_sender()`
+    /// and delivers it encrypted through the 1:1 session with sealed sender wrapping.
+    pub fn distribute_sender_key(
         session: &mut PackSession,
         sender_certificate: &SenderCertificate,
-        plaintext: &[u8],
+        skdm: &SenderKeyDistribution,
         current_time: u64,
     ) -> Result<Vec<u8>> {
-        let session_ciphertext = session.encrypt(plaintext)?;
+        let session_ciphertext = session.encrypt(&skdm.0)?;
         sealed_sender::sealed_sender_encrypt(
             &session.our_identity,
             sender_certificate,
@@ -748,25 +769,33 @@ impl PackSealedSender {
         )
     }
 
-    /// Composed decrypt for 1:1 SKDM delivery: sealed sender then session cipher.
-    pub fn decrypt_session_message(
+    /// Receive a sender key distribution from a sealed sender envelope.
+    ///
+    /// Unseals and session-decrypts the SKDM, then processes it into
+    /// a receiver group session for the given distribution ID.
+    pub fn receive_sender_key(
         session: &mut PackSession,
         ciphertext: &[u8],
         trust_root: &PublicKey,
         current_time: u64,
-    ) -> Result<SealedSenderResult> {
+        distribution_id: &str,
+    ) -> Result<(SealedSenderResult, PackGroupSession)> {
         let unsealed = sealed_sender::sealed_sender_decrypt(
             &session.our_identity,
             ciphertext,
             trust_root,
             current_time,
         )?;
-        let plaintext = session.decrypt(&unsealed.plaintext)?;
-        Ok(SealedSenderResult {
-            sender_uuid: unsealed.sender_uuid,
-            sender_device_id: unsealed.sender_device_id,
-            plaintext,
-        })
+        let skdm_bytes = session.decrypt(&unsealed.plaintext)?;
+        let group_session = PackGroupSession::create_receiver(distribution_id, &skdm_bytes)?;
+        Ok((
+            SealedSenderResult {
+                sender_uuid: unsealed.sender_uuid,
+                sender_device_id: unsealed.sender_device_id,
+                plaintext: skdm_bytes,
+            },
+            group_session,
+        ))
     }
 }
 
@@ -910,8 +939,8 @@ mod tests {
 
     #[test]
     fn test_pack_group_session_roundtrip() {
-        let (mut sender, dist_bytes) = PackGroupSession::create_sender("group-1").unwrap();
-        let mut receiver = PackGroupSession::create_receiver("group-1", &dist_bytes).unwrap();
+        let (mut sender, dist) = PackGroupSession::create_sender("group-1").unwrap();
+        let mut receiver = PackGroupSession::create_receiver("group-1", &dist.0).unwrap();
 
         for i in 0..5 {
             let msg = format!("group msg {i}");
@@ -923,9 +952,9 @@ mod tests {
 
     #[test]
     fn test_pack_group_multiple_receivers() {
-        let (mut sender, dist_bytes) = PackGroupSession::create_sender("group-1").unwrap();
-        let mut r1 = PackGroupSession::create_receiver("group-1", &dist_bytes).unwrap();
-        let mut r2 = PackGroupSession::create_receiver("group-1", &dist_bytes).unwrap();
+        let (mut sender, dist) = PackGroupSession::create_sender("group-1").unwrap();
+        let mut r1 = PackGroupSession::create_receiver("group-1", &dist.0).unwrap();
+        let mut r2 = PackGroupSession::create_receiver("group-1", &dist.0).unwrap();
 
         let ct = sender.encrypt(b"to all").unwrap();
         assert_eq!(r1.decrypt(&ct).unwrap(), b"to all");
@@ -1046,7 +1075,7 @@ mod tests {
 
     #[test]
     fn test_pack_group_session_serialization_roundtrip() {
-        let (mut sender, dist_bytes) = PackGroupSession::create_sender("group-1").unwrap();
+        let (mut sender, dist) = PackGroupSession::create_sender("group-1").unwrap();
 
         // Encrypt a message to advance the chain
         let ct = sender.encrypt(b"msg 1").unwrap();
@@ -1057,7 +1086,7 @@ mod tests {
         assert_eq!(sender_restored.distribution_id(), "group-1");
 
         // Receiver from original dist message can decrypt messages from restored sender
-        let mut receiver = PackGroupSession::create_receiver("group-1", &dist_bytes).unwrap();
+        let mut receiver = PackGroupSession::create_receiver("group-1", &dist.0).unwrap();
         receiver.decrypt(&ct).unwrap();
 
         let ct2 = sender_restored.encrypt(b"after restore").unwrap();
@@ -1130,7 +1159,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sealed_sender_composed_with_session() {
+    fn test_distribute_and_receive_sender_key() {
         let alice_identity = IdentityKeyPair::generate();
         let bob_identity = IdentityKeyPair::generate();
         let server_kp = KeyPair::generate();
@@ -1161,7 +1190,6 @@ mod tests {
             &first_msg,
         ).unwrap();
 
-        // Build sender certificate for Alice
         let server_cert = sealed_sender::ServerCertificate {
             key: server_kp.public.clone(),
             id: 1,
@@ -1178,45 +1206,36 @@ mod tests {
         let sig = curve::xeddsa_sign(&server_kp.private, &content);
         alice_cert.signature = sig.to_vec();
 
-        // Alice sends a composed sealed+session message
-        let envelope = PackSealedSender::encrypt_session_message(
-            &mut alice,
-            &alice_cert,
-            b"sealed ratchet hello",
-            1000,
+        // Alice creates a group session and distributes the sender key to Bob
+        let (mut alice_group, skdm) = PackGroupSession::create_sender("group-1").unwrap();
+
+        let sealed_skdm = PackSealedSender::distribute_sender_key(
+            &mut alice, &alice_cert, &skdm, 1000,
         ).unwrap();
 
-        // Bob decrypts the composed message
-        let result = PackSealedSender::decrypt_session_message(
-            &mut bob,
-            &envelope,
-            &server_kp.public,
-            1000,
+        // Bob receives the sender key
+        let (result, mut bob_group) = PackSealedSender::receive_sender_key(
+            &mut bob, &sealed_skdm, &server_kp.public, 1000, "group-1",
         ).unwrap();
 
         assert_eq!(result.sender_uuid, "alice-uuid");
-        assert_eq!(result.sender_device_id, 1);
-        assert_eq!(result.plaintext, b"sealed ratchet hello");
 
-        // Verify multiple messages work (ratchet advances correctly)
-        for i in 0..5 {
-            let msg = format!("sealed msg {i}");
-            let env = PackSealedSender::encrypt_session_message(
-                &mut alice,
-                &alice_cert,
-                msg.as_bytes(),
-                1000,
-            ).unwrap();
+        // Now Alice can send group messages that Bob can decrypt
+        let bob_addr = ProtocolAddress::new("bob".to_string(), 1);
+        let recipients = vec![
+            Recipient { address: &bob_addr, identity: &bob_identity.public },
+        ];
 
-            let res = PackSealedSender::decrypt_session_message(
-                &mut bob,
-                &env,
-                &server_kp.public,
-                1000,
-            ).unwrap();
+        let blobs = PackSealedSender::encrypt_message(
+            &mut alice_group, &alice_identity, &alice_cert,
+            &recipients, b"hello via sender key", 1000,
+        ).unwrap();
 
-            assert_eq!(res.plaintext, msg.as_bytes());
-        }
+        let envelope = PackSealedSender::decrypt_message(
+            &bob_identity, &blobs[0].ciphertext, &server_kp.public, 1000,
+        ).unwrap();
+        let plaintext = envelope.decrypt(&mut bob_group).unwrap();
+        assert_eq!(plaintext, b"hello via sender key");
     }
 
     #[test]
@@ -1292,14 +1311,14 @@ mod tests {
         alice_cert.signature = sig.to_vec();
 
         // Alice creates a sender group session
-        let (mut alice_group, dist_bytes) =
+        let (mut alice_group, dist) =
             PackGroupSession::create_sender("group-1").unwrap();
 
         // Bob and Carol receive the distribution message
         let mut bob_group =
-            PackGroupSession::create_receiver("group-1", &dist_bytes).unwrap();
+            PackGroupSession::create_receiver("group-1", &dist.0).unwrap();
         let mut carol_group =
-            PackGroupSession::create_receiver("group-1", &dist_bytes).unwrap();
+            PackGroupSession::create_receiver("group-1", &dist.0).unwrap();
 
         let bob_addr = ProtocolAddress::new("bob".to_string(), 1);
         let carol_addr = ProtocolAddress::new("carol".to_string(), 1);
@@ -1393,7 +1412,7 @@ mod tests {
         let sig = curve::xeddsa_sign(&server_kp.private, &content);
         alice_cert.signature = sig.to_vec();
 
-        let (mut alice_group, _dist_bytes) =
+        let (mut alice_group, _dist) =
             PackGroupSession::create_sender("group-1").unwrap();
         let bob_addr = ProtocolAddress::new("bob".to_string(), 1);
         let recipients = vec![
