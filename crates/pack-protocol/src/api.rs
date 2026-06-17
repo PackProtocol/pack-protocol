@@ -502,8 +502,6 @@ impl PackGroupSession {
     }
 
     /// Create a group session as a receiver from a distribution message.
-    /// Use `PackSealedSender::receive_sender_key` instead — incoming
-    /// SKDMs must always come through a sealed sender envelope.
     pub(crate) fn create_receiver(
         distribution_id: &str,
         distribution_message: &[u8],
@@ -515,6 +513,17 @@ impl PackGroupSession {
             record,
             distribution_id: distribution_id.to_string(),
         })
+    }
+
+    /// Process SKDM bytes that have already been decrypted through your
+    /// own unseal + session decrypt pipeline. Use this when the sealed
+    /// sender and session layers are handled separately (e.g. raw cert
+    /// format, PreKeyPackMessage session establishment).
+    pub fn from_distribution(
+        distribution_id: &str,
+        skdm_bytes: &[u8],
+    ) -> Result<Self> {
+        Self::create_receiver(distribution_id, skdm_bytes)
     }
 
     /// Encrypt a message for the group (sender only).
