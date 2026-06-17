@@ -4,6 +4,7 @@ use pack_protocol::fingerprint::ScannableFingerprint;
 use pack_protocol::keys::{
     IdentityKey, IdentityKeyPair, OneTimePreKey, PQPreKey, PreKeyBundle, SignedPreKey,
 };
+use pack_protocol::store::ProtocolAddress;
 use pack_protocol::sealed_sender::{SenderCertificate, ServerCertificate};
 
 #[swift_bridge::bridge]
@@ -172,6 +173,39 @@ mod ffi {
             current_time: u64,
             distribution_id: &str,
         ) -> Result<PackGroupSessionBridge, PackBridgeError>;
+
+        #[swift_bridge(associated_to = PackSealedSenderBridge)]
+        fn encrypt_message(
+            group_session: &mut PackGroupSessionBridge,
+            sender_identity_public: &[u8],
+            sender_identity_private: &[u8],
+            sender_uuid: &str,
+            sender_device_id: u32,
+            server_cert_key: &[u8],
+            server_cert_id: u32,
+            cert_expiration: u64,
+            cert_signature: &[u8],
+            recipient_address_name: &str,
+            recipient_address_device_id: u32,
+            recipient_identity_key: &[u8],
+            plaintext: &[u8],
+            current_time: u64,
+        ) -> Result<Vec<u8>, PackBridgeError>;
+
+        #[swift_bridge(associated_to = PackSealedSenderBridge)]
+        fn decrypt_message(
+            our_identity_public: &[u8],
+            our_identity_private: &[u8],
+            ciphertext: &[u8],
+            trust_root: &[u8],
+            current_time: u64,
+        ) -> Result<SealedSenderDecryptResult, PackBridgeError>;
+
+        #[swift_bridge(associated_to = PackSealedSenderBridge)]
+        fn decrypt_envelope(
+            group_session: &mut PackGroupSessionBridge,
+            inner_ciphertext: &[u8],
+        ) -> Result<Vec<u8>, PackBridgeError>;
     }
 
     #[swift_bridge(swift_repr = "struct")]
@@ -669,6 +703,90 @@ impl PackSealedSenderBridge {
             inner: group_session,
             distribution_message: None,
         })
+    }
+
+    fn encrypt_message(
+        group_session: &mut PackGroupSessionBridge,
+        sender_identity_public: &[u8],
+        sender_identity_private: &[u8],
+        sender_uuid: &str,
+        sender_device_id: u32,
+        server_cert_key: &[u8],
+        server_cert_id: u32,
+        cert_expiration: u64,
+        cert_signature: &[u8],
+        recipient_address_name: &str,
+        recipient_address_device_id: u32,
+        recipient_identity_key: &[u8],
+        plaintext: &[u8],
+        current_time: u64,
+    ) -> Result<Vec<u8>, ffi::PackBridgeError> {
+        let sender_identity = build_identity_pair(sender_identity_public, sender_identity_private)?;
+        let server_pub = PublicKey::from_bytes(
+            server_cert_key
+                .try_into()
+                .map_err(|_| ffi::PackBridgeError::InvalidKey("server cert key must be 32 bytes".into()))?,
+        );
+        let cert = SenderCertificate {
+            sender_uuid: sender_uuid.to_string(),
+            sender_device_id,
+            sender_identity: sender_identity.public.clone(),
+            expiration: cert_expiration,
+            server_certificate: ServerCertificate { key: server_pub, id: server_cert_id },
+            signature: cert_signature.to_vec(),
+        };
+        let recipient_ik = IdentityKey::from_bytes(
+            recipient_identity_key
+                .try_into()
+                .map_err(|_| ffi::PackBridgeError::InvalidKey("recipient key must be 32 bytes".into()))?,
+        ).map_err(|e| ffi::PackBridgeError::InvalidKey(e.to_string()))?;
+        let addr = ProtocolAddress::new(recipient_address_name.to_string(), recipient_address_device_id);
+        let recipients = [api::Recipient { address: &addr, identity: &recipient_ik }];
+
+        let blobs = map_err(api::PackSealedSender::encrypt_message(
+            &mut group_session.inner,
+            &sender_identity,
+            &cert,
+            &recipients,
+            plaintext,
+            current_time,
+        ))?;
+
+        Ok(blobs.into_iter().next().map(|b| b.ciphertext).unwrap_or_default())
+    }
+
+    fn decrypt_message(
+        our_identity_public: &[u8],
+        our_identity_private: &[u8],
+        ciphertext: &[u8],
+        trust_root: &[u8],
+        current_time: u64,
+    ) -> Result<ffi::SealedSenderDecryptResult, ffi::PackBridgeError> {
+        let our_identity = build_identity_pair(our_identity_public, our_identity_private)?;
+        let trust_root_key = PublicKey::from_bytes(
+            trust_root
+                .try_into()
+                .map_err(|_| ffi::PackBridgeError::InvalidKey("trust root must be 32 bytes".into()))?,
+        );
+
+        let envelope = map_err(api::PackSealedSender::decrypt_message(
+            &our_identity, ciphertext, &trust_root_key, current_time,
+        ))?;
+
+        let inner = envelope.inner_ciphertext();
+        Ok(ffi::SealedSenderDecryptResult {
+            sender_uuid: envelope.sender_uuid,
+            sender_device_id: envelope.sender_device_id,
+            plaintext: inner,
+        })
+    }
+
+    fn decrypt_envelope(
+        group_session: &mut PackGroupSessionBridge,
+        inner_ciphertext: &[u8],
+    ) -> Result<Vec<u8>, ffi::PackBridgeError> {
+        let envelope = api::SealedEnvelope::from_inner(inner_ciphertext.to_vec());
+        map_err(envelope.decrypt(&mut group_session.inner))
     }
 }
 

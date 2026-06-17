@@ -635,6 +635,18 @@ impl SealedEnvelope {
         self.sender_device_id
     }
 
+    pub fn inner_ciphertext(&self) -> Vec<u8> {
+        self.inner.clone()
+    }
+
+    pub fn from_inner(inner: Vec<u8>) -> Self {
+        Self {
+            sender_uuid: String::new(),
+            sender_device_id: 0,
+            inner,
+        }
+    }
+
     pub fn decrypt(self, group_session: &mut PackGroupSession) -> Result<Vec<u8>> {
         let msg = SenderKeyMessage::from_bytes(&self.inner)?;
         group::group_decrypt(&mut group_session.record, &msg)
