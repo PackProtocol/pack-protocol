@@ -5,7 +5,6 @@ use jni::sys::{jbyteArray, jint, jlong};
 use pack_protocol::api::{PackGroupSession, PackSealedSender, PackSession, SenderKeyDistribution};
 use pack_protocol::crypto::curve::{PrivateKey, PublicKey};
 use pack_protocol::keys::{IdentityKey, IdentityKeyPair, OneTimePreKey, PreKeyBundle, SignedPreKey};
-use pack_protocol::sealed_sender::{SenderCertificate, ServerCertificate};
 
 use crate::convert::{destroy_handle, from_handle_mut, throw_error, to_handle};
 
@@ -699,12 +698,7 @@ pub unsafe extern "system" fn Java_org_pack_protocol_PackSealedSender_nativeDist
     mut env: JNIEnv<'local>,
     _class: JClass,
     session_handle: jlong,
-    sender_uuid: JString<'local>,
-    sender_device_id: jint,
-    server_cert_key: JByteArray<'local>,
-    server_cert_id: jint,
-    cert_expiration: jlong,
-    cert_signature: JByteArray<'local>,
+    raw_cert_blob: JByteArray<'local>,
     skdm_bytes: JByteArray<'local>,
     current_time: jlong,
 ) -> jbyteArray {
@@ -713,15 +707,7 @@ pub unsafe extern "system" fn Java_org_pack_protocol_PackSealedSender_nativeDist
         None => { let _ = throw_error(&mut env, "Invalid session handle"); return std::ptr::null_mut(); }
     };
 
-    let uuid_str: String = match env.get_string(&sender_uuid) {
-        Ok(s) => s.into(),
-        Err(_) => return std::ptr::null_mut(),
-    };
-    let sc_key = match env.convert_byte_array(&server_cert_key) {
-        Ok(b) => b,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    let sig = match env.convert_byte_array(&cert_signature) {
+    let cert_blob = match env.convert_byte_array(&raw_cert_blob) {
         Ok(b) => b,
         Err(_) => return std::ptr::null_mut(),
     };
@@ -730,25 +716,9 @@ pub unsafe extern "system" fn Java_org_pack_protocol_PackSealedSender_nativeDist
         Err(_) => return std::ptr::null_mut(),
     };
 
-    if sc_key.len() != 32 {
-        let _ = throw_error(&mut env, "Server cert key must be 32 bytes");
-        return std::ptr::null_mut();
-    }
-    let mut key_arr = [0u8; 32];
-    key_arr.copy_from_slice(&sc_key);
-
-    let cert = SenderCertificate {
-        sender_uuid: uuid_str,
-        sender_device_id: sender_device_id as u32,
-        sender_identity: session.our_identity().clone(),
-        expiration: cert_expiration as u64,
-        server_certificate: ServerCertificate { key: PublicKey::from_bytes(key_arr), id: server_cert_id as u32 },
-        signature: sig,
-    };
-
     let skdm = SenderKeyDistribution::from_bytes(skdm);
 
-    match PackSealedSender::distribute_sender_key(session, &cert, &skdm, current_time as u64) {
+    match PackSealedSender::distribute_sender_key(session, &cert_blob, &skdm, current_time as u64) {
         Ok(sealed) => match env.byte_array_from_slice(&sealed) {
             Ok(arr) => arr.into_raw(),
             Err(_) => std::ptr::null_mut(),

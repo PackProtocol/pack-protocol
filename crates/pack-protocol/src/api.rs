@@ -675,7 +675,7 @@ impl SealedEnvelope {
 pub struct PackSealedSender;
 
 impl PackSealedSender {
-    pub fn encrypt(
+    pub(crate) fn encrypt_with_cert(
         sender_identity: &IdentityKeyPair,
         sender_certificate: &SenderCertificate,
         recipient_identity: &IdentityKey,
@@ -691,16 +691,7 @@ impl PackSealedSender {
         )
     }
 
-    pub fn decrypt(
-        our_identity: &IdentityKeyPair,
-        ciphertext: &[u8],
-        trust_root: &PublicKey,
-        current_time: u64,
-    ) -> Result<SealedSenderResult> {
-        sealed_sender::sealed_sender_decrypt(our_identity, ciphertext, trust_root, current_time)
-    }
-
-    pub fn encrypt_raw_cert(
+    pub fn encrypt(
         sender_identity: &IdentityKeyPair,
         raw_cert_blob: &[u8],
         recipient_identity: &IdentityKey,
@@ -712,7 +703,7 @@ impl PackSealedSender {
         )
     }
 
-    pub fn decrypt_raw_cert(
+    pub fn decrypt(
         our_identity: &IdentityKeyPair,
         ciphertext: &[u8],
         trust_root: &PublicKey,
@@ -725,39 +716,8 @@ impl PackSealedSender {
     ///
     /// Sender key encrypts the plaintext once, then wraps it in a sealed sender
     /// envelope per recipient. Returns one sealed blob per recipient for delivery.
+    /// Takes the raw cert blob from the server as-is.
     pub fn encrypt_message(
-        group_session: &mut PackGroupSession,
-        sender_identity: &IdentityKeyPair,
-        sender_certificate: &SenderCertificate,
-        recipients: &[Recipient],
-        plaintext: &[u8],
-        current_time: u64,
-    ) -> Result<Vec<SealedBlob>> {
-        let sender_key_msg = group::group_encrypt(&mut group_session.record, plaintext)?;
-        let sender_key_bytes = sender_key_msg.to_bytes();
-
-        let mut result = Vec::with_capacity(recipients.len());
-        for r in recipients {
-            let sealed = sealed_sender::sealed_sender_encrypt(
-                sender_identity,
-                sender_certificate,
-                r.identity,
-                &sender_key_bytes,
-                current_time,
-            )?;
-            result.push(SealedBlob {
-                recipient: r.address.clone(),
-                ciphertext: sealed,
-            });
-        }
-
-        Ok(result)
-    }
-
-    /// Like `encrypt_message` but takes raw cert bytes instead of a
-    /// `SenderCertificate`. For clients that store the server-issued
-    /// certificate as an opaque blob.
-    pub fn encrypt_message_raw_cert(
         group_session: &mut PackGroupSession,
         sender_identity: &IdentityKeyPair,
         raw_cert_blob: &[u8],
@@ -797,7 +757,7 @@ impl PackSealedSender {
         trust_root: &PublicKey,
         current_time: u64,
     ) -> Result<SealedEnvelope> {
-        let result = sealed_sender::sealed_sender_decrypt(
+        let result = sealed_sender::sealed_sender_decrypt_raw_cert(
             our_identity,
             ciphertext,
             trust_root,
@@ -816,14 +776,14 @@ impl PackSealedSender {
     /// and delivers it encrypted through the 1:1 session with sealed sender wrapping.
     pub fn distribute_sender_key(
         session: &mut PackSession,
-        sender_certificate: &SenderCertificate,
+        raw_cert_blob: &[u8],
         skdm: &SenderKeyDistribution,
         current_time: u64,
     ) -> Result<Vec<u8>> {
         let session_ciphertext = session.encrypt(&skdm.0)?;
-        sealed_sender::sealed_sender_encrypt(
+        sealed_sender::sealed_sender_encrypt_raw_cert(
             &session.our_identity,
-            sender_certificate,
+            raw_cert_blob,
             &session.remote_identity,
             &session_ciphertext,
             current_time,
@@ -841,7 +801,7 @@ impl PackSealedSender {
         current_time: u64,
         distribution_id: &str,
     ) -> Result<(SealedSenderResult, PackGroupSession)> {
-        let unsealed = sealed_sender::sealed_sender_decrypt(
+        let unsealed = sealed_sender::sealed_sender_decrypt_raw_cert(
             &session.our_identity,
             ciphertext,
             trust_root,
@@ -910,6 +870,46 @@ impl PackFingerprint {
 mod tests {
     use super::*;
     use crate::crypto::curve::{self, KeyPair};
+
+    fn write_protobuf_varint(buf: &mut Vec<u8>, mut val: u64) {
+        loop {
+            let byte = (val & 0x7F) as u8;
+            val >>= 7;
+            if val == 0 { buf.push(byte); break; }
+            buf.push(byte | 0x80);
+        }
+    }
+
+    fn create_raw_cert(
+        uuid: &str,
+        device_id: u32,
+        identity: &IdentityKey,
+        expiration: u64,
+        server_private: &curve::PrivateKey,
+    ) -> Vec<u8> {
+        let mut inner = Vec::new();
+        inner.push(0x0A); // field 1, wire type 2 (bytes): UUID
+        write_protobuf_varint(&mut inner, uuid.len() as u64);
+        inner.extend_from_slice(uuid.as_bytes());
+        inner.push(0x10); // field 2, wire type 0 (varint): device_id
+        write_protobuf_varint(&mut inner, device_id as u64);
+        inner.push(0x19); // field 3, wire type 1 (fixed64): expiration
+        inner.extend_from_slice(&expiration.to_le_bytes());
+        inner.push(0x22); // field 4, wire type 2 (bytes): identity key
+        write_protobuf_varint(&mut inner, 32);
+        inner.extend_from_slice(identity.as_bytes());
+
+        let sig = curve::xeddsa_sign(server_private, &inner);
+
+        let mut out = Vec::new();
+        out.push(0x0A); // field 1, wire type 2: inner cert
+        write_protobuf_varint(&mut out, inner.len() as u64);
+        out.extend_from_slice(&inner);
+        out.push(0x12); // field 2, wire type 2: signature
+        write_protobuf_varint(&mut out, sig.len() as u64);
+        out.extend_from_slice(&sig);
+        out
+    }
 
     #[test]
     fn test_pack_session_full_exchange() {
@@ -1028,26 +1028,13 @@ mod tests {
         let bob_identity = IdentityKeyPair::generate();
         let server_kp = KeyPair::generate();
 
-        let server_cert = sealed_sender::ServerCertificate {
-            key: server_kp.public.clone(),
-            id: 1,
-        };
-
-        let mut cert = SenderCertificate {
-            sender_uuid: "alice-uuid".to_string(),
-            sender_device_id: 1,
-            sender_identity: alice_identity.public.clone(),
-            expiration: 2000,
-            server_certificate: server_cert,
-            signature: Vec::new(),
-        };
-        let content = cert.serialize_content();
-        let sig = curve::xeddsa_sign(&server_kp.private, &content);
-        cert.signature = sig.to_vec();
+        let raw_cert = create_raw_cert(
+            "alice-uuid", 1, &alice_identity.public, 2000, &server_kp.private,
+        );
 
         let encrypted = PackSealedSender::encrypt(
             &alice_identity,
-            &cert,
+            &raw_cert,
             &bob_identity.public,
             b"sealed hello",
             1000,
@@ -1251,27 +1238,15 @@ mod tests {
             &first_msg,
         ).unwrap();
 
-        let server_cert = sealed_sender::ServerCertificate {
-            key: server_kp.public.clone(),
-            id: 1,
-        };
-        let mut alice_cert = SenderCertificate {
-            sender_uuid: "alice-uuid".to_string(),
-            sender_device_id: 1,
-            sender_identity: alice_identity.public.clone(),
-            expiration: 2000,
-            server_certificate: server_cert,
-            signature: Vec::new(),
-        };
-        let content = alice_cert.serialize_content();
-        let sig = curve::xeddsa_sign(&server_kp.private, &content);
-        alice_cert.signature = sig.to_vec();
+        let raw_cert = create_raw_cert(
+            "alice-uuid", 1, &alice_identity.public, 2000, &server_kp.private,
+        );
 
         // Alice creates a group session and distributes the sender key to Bob
         let (mut alice_group, skdm) = PackGroupSession::create_sender("group-1").unwrap();
 
         let sealed_skdm = PackSealedSender::distribute_sender_key(
-            &mut alice, &alice_cert, &skdm, 1000,
+            &mut alice, &raw_cert, &skdm, 1000,
         ).unwrap();
 
         // Bob receives the sender key
@@ -1288,7 +1263,7 @@ mod tests {
         ];
 
         let blobs = PackSealedSender::encrypt_message(
-            &mut alice_group, &alice_identity, &alice_cert,
+            &mut alice_group, &alice_identity, &raw_cert,
             &recipients, b"hello via sender key", 1000,
         ).unwrap();
 
@@ -1355,21 +1330,9 @@ mod tests {
         let carol_identity = IdentityKeyPair::generate();
         let server_kp = KeyPair::generate();
 
-        let server_cert = sealed_sender::ServerCertificate {
-            key: server_kp.public.clone(),
-            id: 1,
-        };
-        let mut alice_cert = SenderCertificate {
-            sender_uuid: "alice-uuid".to_string(),
-            sender_device_id: 1,
-            sender_identity: alice_identity.public.clone(),
-            expiration: 2000,
-            server_certificate: server_cert,
-            signature: Vec::new(),
-        };
-        let content = alice_cert.serialize_content();
-        let sig = curve::xeddsa_sign(&server_kp.private, &content);
-        alice_cert.signature = sig.to_vec();
+        let raw_cert = create_raw_cert(
+            "alice-uuid", 1, &alice_identity.public, 2000, &server_kp.private,
+        );
 
         // Alice creates a sender group session
         let (mut alice_group, dist) =
@@ -1393,7 +1356,7 @@ mod tests {
         let sealed_blobs = PackSealedSender::encrypt_message(
             &mut alice_group,
             &alice_identity,
-            &alice_cert,
+            &raw_cert,
             &recipients,
             b"hello group!",
             1000,
@@ -1432,7 +1395,7 @@ mod tests {
             let blobs = PackSealedSender::encrypt_message(
                 &mut alice_group,
                 &alice_identity,
-                &alice_cert,
+                &raw_cert,
                 &recipients,
                 msg.as_bytes(),
                 1000,
@@ -1457,21 +1420,9 @@ mod tests {
         let eve_identity = IdentityKeyPair::generate();
         let server_kp = KeyPair::generate();
 
-        let server_cert = sealed_sender::ServerCertificate {
-            key: server_kp.public.clone(),
-            id: 1,
-        };
-        let mut alice_cert = SenderCertificate {
-            sender_uuid: "alice-uuid".to_string(),
-            sender_device_id: 1,
-            sender_identity: alice_identity.public.clone(),
-            expiration: 2000,
-            server_certificate: server_cert,
-            signature: Vec::new(),
-        };
-        let content = alice_cert.serialize_content();
-        let sig = curve::xeddsa_sign(&server_kp.private, &content);
-        alice_cert.signature = sig.to_vec();
+        let raw_cert = create_raw_cert(
+            "alice-uuid", 1, &alice_identity.public, 2000, &server_kp.private,
+        );
 
         let (mut alice_group, _dist) =
             PackGroupSession::create_sender("group-1").unwrap();
@@ -1481,7 +1432,7 @@ mod tests {
         ];
 
         let blobs = PackSealedSender::encrypt_message(
-            &mut alice_group, &alice_identity, &alice_cert,
+            &mut alice_group, &alice_identity, &raw_cert,
             &recipients, b"for bob only", 1000,
         ).unwrap();
 

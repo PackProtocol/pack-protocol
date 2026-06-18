@@ -3,7 +3,6 @@ use std::slice;
 use pack_protocol::api::{PackGroupSession, PackSealedSender, PackSession};
 use pack_protocol::crypto::curve::PublicKey;
 use pack_protocol::keys::{IdentityKey, IdentityKeyPair, OneTimePreKey, PreKeyBundle, SignedPreKey};
-use pack_protocol::sealed_sender::SenderCertificate;
 
 use crate::error::PackFfiError;
 use crate::handles;
@@ -272,10 +271,6 @@ pub unsafe extern "C" fn pack_sealed_sender_encrypt_msg(
     }
 
     let cert_data = slice::from_raw_parts(sender_cert_data, sender_cert_len);
-    let cert = match SenderCertificate::deserialize(cert_data) {
-        Ok(c) => c,
-        Err(e) => return PackFfiError::from(e),
-    };
 
     let mut rk_bytes = [0u8; 32];
     rk_bytes.copy_from_slice(slice::from_raw_parts(recipient_key_data, 32));
@@ -286,7 +281,7 @@ pub unsafe extern "C" fn pack_sealed_sender_encrypt_msg(
 
     let msg = slice::from_raw_parts(inner_message, inner_message_len);
 
-    match PackSealedSender::encrypt(&*sender_identity, &cert, &recipient_ik, msg, current_time) {
+    match PackSealedSender::encrypt(&*sender_identity, cert_data, &recipient_ik, msg, current_time) {
         Ok(encrypted) => {
             if !handles::write_bytes(&encrypted, out_buf, buf_len, out_len) {
                 return PackFfiError::InvalidArgument;

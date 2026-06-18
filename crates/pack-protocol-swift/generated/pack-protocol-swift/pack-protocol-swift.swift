@@ -394,28 +394,16 @@ public class PackSealedSenderBridge: PackSealedSenderBridgeRefMut {
     }
 }
 extension PackSealedSenderBridge {
-    class public func sealed_encrypt<GenericToRustStr: ToRustStr>(_ sender_identity_public: UnsafeBufferPointer<UInt8>, _ sender_identity_private: UnsafeBufferPointer<UInt8>, _ sender_uuid: GenericToRustStr, _ sender_device_id: UInt32, _ server_cert_key: UnsafeBufferPointer<UInt8>, _ server_cert_id: UInt32, _ cert_expiration: UInt64, _ cert_signature: UnsafeBufferPointer<UInt8>, _ recipient_identity: UnsafeBufferPointer<UInt8>, _ inner_message: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> RustVec<UInt8> {
-        return try sender_uuid.toRustStr({ sender_uuidAsRustStr in
-            try { let val = __swift_bridge__$PackSealedSenderBridge$sealed_encrypt(sender_identity_public.toFfiSlice(), sender_identity_private.toFfiSlice(), sender_uuidAsRustStr, sender_device_id, server_cert_key.toFfiSlice(), server_cert_id, cert_expiration, cert_signature.toFfiSlice(), recipient_identity.toFfiSlice(), inner_message.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
-        })
+    class public func sealed_encrypt(_ sender_identity_public: UnsafeBufferPointer<UInt8>, _ sender_identity_private: UnsafeBufferPointer<UInt8>, _ raw_cert_blob: UnsafeBufferPointer<UInt8>, _ recipient_identity: UnsafeBufferPointer<UInt8>, _ inner_message: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> RustVec<UInt8> {
+        try { let val = __swift_bridge__$PackSealedSenderBridge$sealed_encrypt(sender_identity_public.toFfiSlice(), sender_identity_private.toFfiSlice(), raw_cert_blob.toFfiSlice(), recipient_identity.toFfiSlice(), inner_message.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
     }
 
     class public func sealed_decrypt(_ our_identity_public: UnsafeBufferPointer<UInt8>, _ our_identity_private: UnsafeBufferPointer<UInt8>, _ ciphertext: UnsafeBufferPointer<UInt8>, _ trust_root: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> SealedSenderDecryptResult {
         try { let val = __swift_bridge__$PackSealedSenderBridge$sealed_decrypt(our_identity_public.toFfiSlice(), our_identity_private.toFfiSlice(), ciphertext.toFfiSlice(), trust_root.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultSealedSenderDecryptResultAndPackBridgeError$ResultOk: return val.payload.ok.intoSwiftRepr() case __swift_bridge__$ResultSealedSenderDecryptResultAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
     }
 
-    class public func sealed_encrypt_raw_cert(_ sender_identity_public: UnsafeBufferPointer<UInt8>, _ sender_identity_private: UnsafeBufferPointer<UInt8>, _ raw_cert_blob: UnsafeBufferPointer<UInt8>, _ recipient_identity: UnsafeBufferPointer<UInt8>, _ inner_message: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> RustVec<UInt8> {
-        try { let val = __swift_bridge__$PackSealedSenderBridge$sealed_encrypt_raw_cert(sender_identity_public.toFfiSlice(), sender_identity_private.toFfiSlice(), raw_cert_blob.toFfiSlice(), recipient_identity.toFfiSlice(), inner_message.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
-    }
-
-    class public func sealed_decrypt_raw_cert(_ our_identity_public: UnsafeBufferPointer<UInt8>, _ our_identity_private: UnsafeBufferPointer<UInt8>, _ ciphertext: UnsafeBufferPointer<UInt8>, _ trust_root: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> SealedSenderDecryptResult {
-        try { let val = __swift_bridge__$PackSealedSenderBridge$sealed_decrypt_raw_cert(our_identity_public.toFfiSlice(), our_identity_private.toFfiSlice(), ciphertext.toFfiSlice(), trust_root.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultSealedSenderDecryptResultAndPackBridgeError$ResultOk: return val.payload.ok.intoSwiftRepr() case __swift_bridge__$ResultSealedSenderDecryptResultAndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
-    }
-
-    class public func distribute_sender_key<GenericToRustStr: ToRustStr>(_ session: PackSessionBridgeRefMut, _ sender_uuid: GenericToRustStr, _ sender_device_id: UInt32, _ server_cert_key: UnsafeBufferPointer<UInt8>, _ server_cert_id: UInt32, _ cert_expiration: UInt64, _ cert_signature: UnsafeBufferPointer<UInt8>, _ skdm_bytes: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> RustVec<UInt8> {
-        return try sender_uuid.toRustStr({ sender_uuidAsRustStr in
-            try { let val = __swift_bridge__$PackSealedSenderBridge$distribute_sender_key(session.ptr, sender_uuidAsRustStr, sender_device_id, server_cert_key.toFfiSlice(), server_cert_id, cert_expiration, cert_signature.toFfiSlice(), skdm_bytes.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
-        })
+    class public func distribute_sender_key(_ session: PackSessionBridgeRefMut, _ raw_cert_blob: UnsafeBufferPointer<UInt8>, _ skdm_bytes: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> RustVec<UInt8> {
+        try { let val = __swift_bridge__$PackSealedSenderBridge$distribute_sender_key(session.ptr, raw_cert_blob.toFfiSlice(), skdm_bytes.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
     }
 
     class public func receive_sender_key<GenericToRustStr: ToRustStr>(_ session: PackSessionBridgeRefMut, _ ciphertext: UnsafeBufferPointer<UInt8>, _ trust_root: UnsafeBufferPointer<UInt8>, _ current_time: UInt64, _ distribution_id: GenericToRustStr) throws -> PackGroupSessionBridge {
@@ -424,11 +412,9 @@ extension PackSealedSenderBridge {
         })
     }
 
-    class public func encrypt_message<GenericToRustStr: ToRustStr>(_ group_session: PackGroupSessionBridgeRefMut, _ sender_identity_public: UnsafeBufferPointer<UInt8>, _ sender_identity_private: UnsafeBufferPointer<UInt8>, _ sender_uuid: GenericToRustStr, _ sender_device_id: UInt32, _ server_cert_key: UnsafeBufferPointer<UInt8>, _ server_cert_id: UInt32, _ cert_expiration: UInt64, _ cert_signature: UnsafeBufferPointer<UInt8>, _ recipient_address_name: GenericToRustStr, _ recipient_address_device_id: UInt32, _ recipient_identity_key: UnsafeBufferPointer<UInt8>, _ plaintext: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> RustVec<UInt8> {
+    class public func encrypt_message<GenericToRustStr: ToRustStr>(_ group_session: PackGroupSessionBridgeRefMut, _ sender_identity_public: UnsafeBufferPointer<UInt8>, _ sender_identity_private: UnsafeBufferPointer<UInt8>, _ raw_cert_blob: UnsafeBufferPointer<UInt8>, _ recipient_address_name: GenericToRustStr, _ recipient_address_device_id: UInt32, _ recipient_identity_key: UnsafeBufferPointer<UInt8>, _ plaintext: UnsafeBufferPointer<UInt8>, _ current_time: UInt64) throws -> RustVec<UInt8> {
         return try recipient_address_name.toRustStr({ recipient_address_nameAsRustStr in
-            return try sender_uuid.toRustStr({ sender_uuidAsRustStr in
-            try { let val = __swift_bridge__$PackSealedSenderBridge$encrypt_message(group_session.ptr, sender_identity_public.toFfiSlice(), sender_identity_private.toFfiSlice(), sender_uuidAsRustStr, sender_device_id, server_cert_key.toFfiSlice(), server_cert_id, cert_expiration, cert_signature.toFfiSlice(), recipient_address_nameAsRustStr, recipient_address_device_id, recipient_identity_key.toFfiSlice(), plaintext.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
-        })
+            try { let val = __swift_bridge__$PackSealedSenderBridge$encrypt_message(group_session.ptr, sender_identity_public.toFfiSlice(), sender_identity_private.toFfiSlice(), raw_cert_blob.toFfiSlice(), recipient_address_nameAsRustStr, recipient_address_device_id, recipient_identity_key.toFfiSlice(), plaintext.toFfiSlice(), current_time); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
         })
     }
 
