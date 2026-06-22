@@ -449,7 +449,11 @@ fn parse_protobuf_sender_cert(data: &[u8]) -> Result<ProtobufSenderCert> {
             0 => {
                 let (val, o) = read_protobuf_varint(&inner, offset)?;
                 offset = o;
-                if field_number == 2 || field_number == 3 { device_id = val as u32; }
+                match field_number {
+                    2 | 3 => device_id = val as u32,
+                    4 => expiration = val,
+                    _ => {}
+                }
             }
             1 => {
                 if offset + 8 > inner.len() { return Err(PackError::InvalidCertificate); }
