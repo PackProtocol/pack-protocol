@@ -287,6 +287,15 @@ enum PackFfiError pack_session_decrypt_msg(PackSession *handle,
                                            uintptr_t buf_len,
                                            uintptr_t *out_len);
 
+enum PackFfiError pack_session_decrypt_auto(PackSession *handle,
+                                            const uint8_t *ciphertext,
+                                            uintptr_t ciphertext_len,
+                                            const SignedPreKey *signed_pre_key,
+                                            const OneTimePreKey *one_time_pre_key,
+                                            uint8_t *out_buf,
+                                            uintptr_t buf_len,
+                                            uintptr_t *out_len);
+
 enum PackFfiError pack_group_session_create_sender(const uint8_t *distribution_id,
                                                    uintptr_t distribution_id_len,
                                                    PackGroupSession **out_session,

@@ -198,6 +198,39 @@ pub unsafe extern "C" fn pack_session_decrypt_msg(
     }
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn pack_session_decrypt_auto(
+    handle: *mut PackSession,
+    ciphertext: *const u8,
+    ciphertext_len: usize,
+    signed_pre_key: *const SignedPreKey,
+    one_time_pre_key: *const OneTimePreKey,
+    out_buf: *mut u8,
+    buf_len: usize,
+    out_len: *mut usize,
+) -> PackFfiError {
+    if handle.is_null() || ciphertext.is_null() || signed_pre_key.is_null() {
+        return PackFfiError::InvalidArgument;
+    }
+    let session = &mut *handle;
+    let ct = slice::from_raw_parts(ciphertext, ciphertext_len);
+    let opk = if one_time_pre_key.is_null() {
+        None
+    } else {
+        Some(&*one_time_pre_key)
+    };
+
+    match session.decrypt_auto(ct, &*signed_pre_key, opk) {
+        Ok(pt) => {
+            if !handles::write_bytes(&pt, out_buf, buf_len, out_len) {
+                return PackFfiError::InvalidArgument;
+            }
+            PackFfiError::Ok
+        }
+        Err(e) => PackFfiError::from(e),
+    }
+}
+
 // ── PackGroupSession ──
 
 #[no_mangle]

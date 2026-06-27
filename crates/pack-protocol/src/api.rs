@@ -3,7 +3,7 @@ use crate::errors::{PackError, Result};
 use crate::fingerprint::{self, Fingerprint, ScannableFingerprint};
 use crate::group::{self, SenderKeyDistributionMessage, SenderKeyMessage, SenderKeyRecord};
 use crate::keys::{IdentityKey, IdentityKeyPair, OneTimePreKey, PQPreKey, PQPreKeyBundle, PreKeyBundle, SignedPreKey};
-use crate::message::{PackMessage, PreKeyPackMessage};
+use crate::message::{CiphertextMessage, PackMessage, PreKeyPackMessage};
 use crate::pqxdh;
 use crate::ratchet;
 use crate::sealed_sender::{self, SealedSenderResult, SenderCertificate};
@@ -340,6 +340,99 @@ impl PackSession {
         Err(PackError::InvalidMessage(
             "no session could decrypt this message".into(),
         ))
+    }
+
+    /// Decrypt a message that may be either a Standard or PreKey message.
+    ///
+    /// Checks the type tag byte to determine the message type:
+    /// - `0x00` (Standard): decrypts using the existing session ratchet
+    /// - `0x01` (PreKey): processes prekey material, archives the current
+    ///   session state, establishes a new ratchet, and decrypts
+    ///
+    /// For the PreKey path, `signed_pre_key` is required and
+    /// `one_time_pre_key` is optional (matching X3DH semantics).
+    pub fn decrypt_auto(
+        &mut self,
+        message_bytes: &[u8],
+        signed_pre_key: &SignedPreKey,
+        one_time_pre_key: Option<&OneTimePreKey>,
+    ) -> Result<Vec<u8>> {
+        let typed = CiphertextMessage::deserialize(message_bytes)?;
+        match typed {
+            CiphertextMessage::Standard(message) => {
+                if let Some(ref current) = self.record.current {
+                    let ad = build_associated_data(current);
+                    let mut ratchet_clone = current.ratchet.clone();
+                    match ratchet::ratchet_decrypt(
+                        &mut ratchet_clone,
+                        &message.header,
+                        &message.ciphertext,
+                        &ad,
+                    ) {
+                        Ok(pt) => {
+                            self.record.current.as_mut().unwrap().ratchet = ratchet_clone;
+                            return Ok(pt);
+                        }
+                        Err(_) => {}
+                    }
+                }
+
+                for i in 0..self.record.previous.len() {
+                    let ad = build_associated_data(&self.record.previous[i]);
+                    let mut ratchet_clone = self.record.previous[i].ratchet.clone();
+                    match ratchet::ratchet_decrypt(
+                        &mut ratchet_clone,
+                        &message.header,
+                        &message.ciphertext,
+                        &ad,
+                    ) {
+                        Ok(pt) => {
+                            self.record.previous[i].ratchet = ratchet_clone;
+                            return Ok(pt);
+                        }
+                        Err(_) => {}
+                    }
+                }
+
+                Err(PackError::InvalidMessage(
+                    "no session could decrypt this standard message".into(),
+                ))
+            }
+            CiphertextMessage::PreKey(pre_key_message) => {
+                let x3dh_result = x3dh::x3dh_respond(
+                    &self.our_identity,
+                    signed_pre_key,
+                    one_time_pre_key,
+                    &pre_key_message.identity_key,
+                    &pre_key_message.base_key,
+                )?;
+
+                let mut ratchet_state = ratchet::ratchet_init_responder(
+                    x3dh_result.shared_secret,
+                    signed_pre_key.key_pair.clone(),
+                );
+
+                let plaintext = ratchet::ratchet_decrypt(
+                    &mut ratchet_state,
+                    &pre_key_message.message.header,
+                    &pre_key_message.message.ciphertext,
+                    &x3dh_result.associated_data,
+                )?;
+
+                let new_state = SessionState {
+                    ratchet: ratchet_state,
+                    local_identity: self.our_identity.public.clone(),
+                    remote_identity: pre_key_message.identity_key.clone(),
+                    alice_base_key: Some(pre_key_message.base_key.clone()),
+                    is_initiator: false,
+                };
+
+                self.record.archive_current_and_set(new_state);
+                self.remote_identity = pre_key_message.identity_key;
+
+                Ok(plaintext)
+            }
+        }
     }
 
     pub fn remote_address(&self) -> &ProtocolAddress {
@@ -1441,5 +1534,401 @@ mod tests {
             &eve_identity, &blobs[0].ciphertext, &server_kp.public, 1000,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_auto_standard_message() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let bob_spk = SignedPreKey::generate(1, &bob_identity, 1000);
+        let bob_opk = OneTimePreKey::generate(100);
+
+        let bob_bundle = PreKeyBundle {
+            identity_key: bob_identity.public.clone(),
+            signed_pre_key_id: bob_spk.id,
+            signed_pre_key: bob_spk.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
+            one_time_pre_key_id: Some(bob_opk.id),
+            one_time_pre_key: Some(bob_opk.key_pair.public.clone()),
+        };
+
+        let (mut alice, first_msg) = PackSession::initiate(
+            "alice", 1, &alice_identity, 1001,
+            "bob", 1, &bob_bundle,
+            b"hello bob!",
+        ).unwrap();
+
+        let (mut bob, _) = PackSession::respond(
+            "bob", 1, &bob_identity, 1002,
+            "alice", 1,
+            &bob_spk, Some(&bob_opk),
+            &first_msg,
+        ).unwrap();
+
+        // Bob sends a standard message, Alice decrypts with decrypt_auto
+        let reply_ct = bob.encrypt(b"standard msg").unwrap();
+        let tagged = CiphertextMessage::Standard(PackMessage::deserialize(&reply_ct).unwrap()).serialize();
+        let alice_spk = SignedPreKey::generate(1, &alice_identity, 1000);
+        let pt = alice.decrypt_auto(&tagged, &alice_spk, None).unwrap();
+        assert_eq!(pt, b"standard msg");
+    }
+
+    #[test]
+    fn test_decrypt_auto_prekey_message() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let bob_spk = SignedPreKey::generate(1, &bob_identity, 1000);
+        let bob_opk = OneTimePreKey::generate(100);
+
+        let bob_bundle = PreKeyBundle {
+            identity_key: bob_identity.public.clone(),
+            signed_pre_key_id: bob_spk.id,
+            signed_pre_key: bob_spk.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
+            one_time_pre_key_id: Some(bob_opk.id),
+            one_time_pre_key: Some(bob_opk.key_pair.public.clone()),
+        };
+
+        // Alice initiates, producing a PreKeyPackMessage
+        let (mut alice, first_msg_bytes) = PackSession::initiate(
+            "alice", 1, &alice_identity, 1001,
+            "bob", 1, &bob_bundle,
+            b"hello via prekey!",
+        ).unwrap();
+
+        // Bob has an empty session and uses decrypt_auto with the tagged prekey message
+        let pre_key_msg = PreKeyPackMessage::deserialize(&first_msg_bytes).unwrap();
+        let tagged = CiphertextMessage::PreKey(pre_key_msg).serialize();
+
+        // Create a fresh bob session from a prior exchange so we can test the
+        // "existing session receives a new PreKey" path
+        let bob_spk2 = SignedPreKey::generate(2, &bob_identity, 1000);
+        let bob_opk2 = OneTimePreKey::generate(200);
+        let bob_bundle2 = PreKeyBundle {
+            identity_key: bob_identity.public.clone(),
+            signed_pre_key_id: bob_spk2.id,
+            signed_pre_key: bob_spk2.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk2.signature,
+            signed_pre_key_timestamp: bob_spk2.timestamp,
+            one_time_pre_key_id: Some(bob_opk2.id),
+            one_time_pre_key: Some(bob_opk2.key_pair.public.clone()),
+        };
+        let (_, old_msg) = PackSession::initiate(
+            "alice", 1, &alice_identity, 1001,
+            "bob", 1, &bob_bundle2,
+            b"old session",
+        ).unwrap();
+        let (mut bob, _) = PackSession::respond(
+            "bob", 1, &bob_identity, 1002,
+            "alice", 1,
+            &bob_spk2, Some(&bob_opk2),
+            &old_msg,
+        ).unwrap();
+
+        // Now bob has an existing session with alice. Alice initiated a new one
+        // (first_msg_bytes). Bob uses decrypt_auto to handle the PreKey message.
+        let pt = bob.decrypt_auto(&tagged, &bob_spk, Some(&bob_opk)).unwrap();
+        assert_eq!(pt, b"hello via prekey!");
+
+        // Verify the session was updated — bob can now encrypt and alice can decrypt
+        let reply_ct = bob.encrypt(b"reply after rekey").unwrap();
+        let reply_pt = alice.decrypt(&reply_ct).unwrap();
+        assert_eq!(reply_pt, b"reply after rekey");
+    }
+
+    #[test]
+    fn test_decrypt_auto_rejects_unknown_type() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let bob_spk = SignedPreKey::generate(1, &bob_identity, 1000);
+        let bob_opk = OneTimePreKey::generate(100);
+
+        let bob_bundle = PreKeyBundle {
+            identity_key: bob_identity.public.clone(),
+            signed_pre_key_id: bob_spk.id,
+            signed_pre_key: bob_spk.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
+            one_time_pre_key_id: Some(bob_opk.id),
+            one_time_pre_key: Some(bob_opk.key_pair.public.clone()),
+        };
+
+        let (_, first_msg) = PackSession::initiate(
+            "alice", 1, &alice_identity, 1001,
+            "bob", 1, &bob_bundle,
+            b"init",
+        ).unwrap();
+        let (mut bob, _) = PackSession::respond(
+            "bob", 1, &bob_identity, 1002,
+            "alice", 1,
+            &bob_spk, Some(&bob_opk),
+            &first_msg,
+        ).unwrap();
+
+        // Unknown type tag
+        let bad_msg = vec![0xFF, 0x01, 0x02, 0x03];
+        let result = bob.decrypt_auto(&bad_msg, &bob_spk, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_auto_empty_input() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let bob_spk = SignedPreKey::generate(1, &bob_identity, 1000);
+        let bob_opk = OneTimePreKey::generate(100);
+
+        let bob_bundle = PreKeyBundle {
+            identity_key: bob_identity.public.clone(),
+            signed_pre_key_id: bob_spk.id,
+            signed_pre_key: bob_spk.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
+            one_time_pre_key_id: Some(bob_opk.id),
+            one_time_pre_key: Some(bob_opk.key_pair.public.clone()),
+        };
+
+        let (_, first_msg) = PackSession::initiate(
+            "alice", 1, &alice_identity, 1001,
+            "bob", 1, &bob_bundle, b"init",
+        ).unwrap();
+        let (mut bob, _) = PackSession::respond(
+            "bob", 1, &bob_identity, 1002,
+            "alice", 1,
+            &bob_spk, Some(&bob_opk), &first_msg,
+        ).unwrap();
+
+        let result = bob.decrypt_auto(&[], &bob_spk, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_auto_prekey_without_opk() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let bob_spk = SignedPreKey::generate(1, &bob_identity, 1000);
+
+        let bob_bundle = PreKeyBundle {
+            identity_key: bob_identity.public.clone(),
+            signed_pre_key_id: bob_spk.id,
+            signed_pre_key: bob_spk.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
+            one_time_pre_key_id: None,
+            one_time_pre_key: None,
+        };
+
+        let (mut alice, first_msg_bytes) = PackSession::initiate(
+            "alice", 1, &alice_identity, 1001,
+            "bob", 1, &bob_bundle, b"no opk prekey",
+        ).unwrap();
+
+        let pre_key_msg = PreKeyPackMessage::deserialize(&first_msg_bytes).unwrap();
+        let tagged = CiphertextMessage::PreKey(pre_key_msg).serialize();
+
+        // Bob with a prior session, receives PreKey without OPK
+        let bob_spk2 = SignedPreKey::generate(2, &bob_identity, 1000);
+        let bob_bundle2 = PreKeyBundle {
+            identity_key: bob_identity.public.clone(),
+            signed_pre_key_id: bob_spk2.id,
+            signed_pre_key: bob_spk2.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk2.signature,
+            signed_pre_key_timestamp: bob_spk2.timestamp,
+            one_time_pre_key_id: None,
+            one_time_pre_key: None,
+        };
+        let (_, old_msg) = PackSession::initiate(
+            "alice", 1, &alice_identity, 1001,
+            "bob", 1, &bob_bundle2, b"old",
+        ).unwrap();
+        let (mut bob, _) = PackSession::respond(
+            "bob", 1, &bob_identity, 1002,
+            "alice", 1,
+            &bob_spk2, None, &old_msg,
+        ).unwrap();
+
+        let pt = bob.decrypt_auto(&tagged, &bob_spk, None).unwrap();
+        assert_eq!(pt, b"no opk prekey");
+
+        let reply_ct = bob.encrypt(b"reply no opk").unwrap();
+        let reply_pt = alice.decrypt(&reply_ct).unwrap();
+        assert_eq!(reply_pt, b"reply no opk");
+    }
+
+    #[test]
+    fn test_decrypt_auto_multiple_standard_then_rekey() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let bob_spk = SignedPreKey::generate(1, &bob_identity, 1000);
+        let bob_opk = OneTimePreKey::generate(100);
+
+        let bob_bundle = PreKeyBundle {
+            identity_key: bob_identity.public.clone(),
+            signed_pre_key_id: bob_spk.id,
+            signed_pre_key: bob_spk.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
+            one_time_pre_key_id: Some(bob_opk.id),
+            one_time_pre_key: Some(bob_opk.key_pair.public.clone()),
+        };
+
+        let (mut alice, first_msg) = PackSession::initiate(
+            "alice", 1, &alice_identity, 1001,
+            "bob", 1, &bob_bundle, b"init",
+        ).unwrap();
+        let (mut bob, _) = PackSession::respond(
+            "bob", 1, &bob_identity, 1002,
+            "alice", 1,
+            &bob_spk, Some(&bob_opk), &first_msg,
+        ).unwrap();
+
+        // Several standard messages via decrypt_auto
+        for i in 0..5 {
+            let msg = format!("standard {i}");
+            let ct = bob.encrypt(msg.as_bytes()).unwrap();
+            let tagged = CiphertextMessage::Standard(PackMessage::deserialize(&ct).unwrap()).serialize();
+            let pt = alice.decrypt_auto(&tagged, &SignedPreKey::generate(1, &alice_identity, 1000), None).unwrap();
+            assert_eq!(pt, msg.as_bytes());
+        }
+
+        // Now alice re-initiates (simulating session refresh)
+        let bob_spk2 = SignedPreKey::generate(2, &bob_identity, 1000);
+        let bob_opk2 = OneTimePreKey::generate(200);
+        let bob_bundle2 = PreKeyBundle {
+            identity_key: bob_identity.public.clone(),
+            signed_pre_key_id: bob_spk2.id,
+            signed_pre_key: bob_spk2.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk2.signature,
+            signed_pre_key_timestamp: bob_spk2.timestamp,
+            one_time_pre_key_id: Some(bob_opk2.id),
+            one_time_pre_key: Some(bob_opk2.key_pair.public.clone()),
+        };
+        let (mut alice2, rekey_msg) = PackSession::initiate(
+            "alice", 1, &alice_identity, 1001,
+            "bob", 1, &bob_bundle2, b"rekeyed!",
+        ).unwrap();
+
+        let pre_key_msg = PreKeyPackMessage::deserialize(&rekey_msg).unwrap();
+        let tagged = CiphertextMessage::PreKey(pre_key_msg).serialize();
+        let pt = bob.decrypt_auto(&tagged, &bob_spk2, Some(&bob_opk2)).unwrap();
+        assert_eq!(pt, b"rekeyed!");
+
+        // Continue with standard messages on the new session
+        for i in 0..3 {
+            let msg = format!("post-rekey {i}");
+            let ct = bob.encrypt(msg.as_bytes()).unwrap();
+            let pt = alice2.decrypt(&ct).unwrap();
+            assert_eq!(pt, msg.as_bytes());
+        }
+    }
+
+    #[test]
+    fn test_decrypt_auto_corrupted_standard_message() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let bob_spk = SignedPreKey::generate(1, &bob_identity, 1000);
+        let bob_opk = OneTimePreKey::generate(100);
+
+        let bob_bundle = PreKeyBundle {
+            identity_key: bob_identity.public.clone(),
+            signed_pre_key_id: bob_spk.id,
+            signed_pre_key: bob_spk.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
+            one_time_pre_key_id: Some(bob_opk.id),
+            one_time_pre_key: Some(bob_opk.key_pair.public.clone()),
+        };
+
+        let (_, first_msg) = PackSession::initiate(
+            "alice", 1, &alice_identity, 1001,
+            "bob", 1, &bob_bundle, b"init",
+        ).unwrap();
+        let (mut bob, _) = PackSession::respond(
+            "bob", 1, &bob_identity, 1002,
+            "alice", 1,
+            &bob_spk, Some(&bob_opk), &first_msg,
+        ).unwrap();
+
+        // Standard type tag but garbage payload
+        let mut corrupted = vec![0x00];
+        corrupted.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00]);
+        let result = bob.decrypt_auto(&corrupted, &bob_spk, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_auto_sender_key_type_rejected() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let bob_spk = SignedPreKey::generate(1, &bob_identity, 1000);
+        let bob_opk = OneTimePreKey::generate(100);
+
+        let bob_bundle = PreKeyBundle {
+            identity_key: bob_identity.public.clone(),
+            signed_pre_key_id: bob_spk.id,
+            signed_pre_key: bob_spk.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
+            one_time_pre_key_id: Some(bob_opk.id),
+            one_time_pre_key: Some(bob_opk.key_pair.public.clone()),
+        };
+
+        let (_, first_msg) = PackSession::initiate(
+            "alice", 1, &alice_identity, 1001,
+            "bob", 1, &bob_bundle, b"init",
+        ).unwrap();
+        let (mut bob, _) = PackSession::respond(
+            "bob", 1, &bob_identity, 1002,
+            "alice", 1,
+            &bob_spk, Some(&bob_opk), &first_msg,
+        ).unwrap();
+
+        // Sender key message type byte (0x74) — must be rejected
+        let sender_key_bytes = vec![0x74, 0x01, 0x02, 0x03, 0x04];
+        let result = bob.decrypt_auto(&sender_key_bytes, &bob_spk, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_auto_session_state_preserved_on_standard_failure() {
+        let alice_identity = IdentityKeyPair::generate();
+        let bob_identity = IdentityKeyPair::generate();
+        let bob_spk = SignedPreKey::generate(1, &bob_identity, 1000);
+        let bob_opk = OneTimePreKey::generate(100);
+
+        let bob_bundle = PreKeyBundle {
+            identity_key: bob_identity.public.clone(),
+            signed_pre_key_id: bob_spk.id,
+            signed_pre_key: bob_spk.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
+            one_time_pre_key_id: Some(bob_opk.id),
+            one_time_pre_key: Some(bob_opk.key_pair.public.clone()),
+        };
+
+        let (mut alice, first_msg) = PackSession::initiate(
+            "alice", 1, &alice_identity, 1001,
+            "bob", 1, &bob_bundle, b"init",
+        ).unwrap();
+        let (mut bob, _) = PackSession::respond(
+            "bob", 1, &bob_identity, 1002,
+            "alice", 1,
+            &bob_spk, Some(&bob_opk), &first_msg,
+        ).unwrap();
+
+        // Send a valid message
+        let ct = bob.encrypt(b"valid msg").unwrap();
+        let tagged = CiphertextMessage::Standard(PackMessage::deserialize(&ct).unwrap()).serialize();
+
+        // Try to decrypt garbage first — should fail but not corrupt session
+        let mut garbage_tagged = vec![0x00];
+        garbage_tagged.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00]);
+        let _ = alice.decrypt_auto(&garbage_tagged, &SignedPreKey::generate(1, &alice_identity, 1000), None);
+
+        // Original valid message should still decrypt
+        let pt = alice.decrypt_auto(&tagged, &SignedPreKey::generate(1, &alice_identity, 1000), None).unwrap();
+        assert_eq!(pt, b"valid msg");
     }
 }
