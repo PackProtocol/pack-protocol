@@ -3,7 +3,7 @@ use crate::errors::{PackError, Result};
 use crate::fingerprint::{self, Fingerprint, ScannableFingerprint};
 use crate::group::{self, SenderKeyDistributionMessage, SenderKeyMessage, SenderKeyRecord};
 use crate::keys::{IdentityKey, IdentityKeyPair, OneTimePreKey, PQPreKey, PQPreKeyBundle, PreKeyBundle, SignedPreKey};
-use crate::message::{CiphertextMessage, PackMessage, PreKeyPackMessage};
+use crate::message::{PackMessage, PreKeyPackMessage};
 use crate::pqxdh;
 use crate::ratchet;
 use crate::sealed_sender::{self, SealedSenderResult, SenderCertificate};
@@ -344,10 +344,8 @@ impl PackSession {
 
     /// Decrypt a message that may be either a Standard or PreKey message.
     ///
-    /// Checks the type tag byte to determine the message type:
-    /// - `0x00` (Standard): decrypts using the existing session ratchet
-    /// - `0x01` (PreKey): processes prekey material, archives the current
-    ///   session state, establishes a new ratchet, and decrypts
+    /// Accepts raw wire-format bytes (no type tag required). Tries standard
+    /// session decrypt first; if that fails, tries PreKey processing.
     ///
     /// For the PreKey path, `signed_pre_key` is required and
     /// `one_time_pre_key` is optional (matching X3DH semantics).
@@ -357,48 +355,15 @@ impl PackSession {
         signed_pre_key: &SignedPreKey,
         one_time_pre_key: Option<&OneTimePreKey>,
     ) -> Result<Vec<u8>> {
-        let typed = CiphertextMessage::deserialize(message_bytes)?;
-        match typed {
-            CiphertextMessage::Standard(message) => {
-                if let Some(ref current) = self.record.current {
-                    let ad = build_associated_data(current);
-                    let mut ratchet_clone = current.ratchet.clone();
-                    match ratchet::ratchet_decrypt(
-                        &mut ratchet_clone,
-                        &message.header,
-                        &message.ciphertext,
-                        &ad,
-                    ) {
-                        Ok(pt) => {
-                            self.record.current.as_mut().unwrap().ratchet = ratchet_clone;
-                            return Ok(pt);
-                        }
-                        Err(_) => {}
-                    }
-                }
+        // Try standard session decrypt first (common path)
+        let standard_err = match self.decrypt(message_bytes) {
+            Ok(pt) => return Ok(pt),
+            Err(e) => e,
+        };
 
-                for i in 0..self.record.previous.len() {
-                    let ad = build_associated_data(&self.record.previous[i]);
-                    let mut ratchet_clone = self.record.previous[i].ratchet.clone();
-                    match ratchet::ratchet_decrypt(
-                        &mut ratchet_clone,
-                        &message.header,
-                        &message.ciphertext,
-                        &ad,
-                    ) {
-                        Ok(pt) => {
-                            self.record.previous[i].ratchet = ratchet_clone;
-                            return Ok(pt);
-                        }
-                        Err(_) => {}
-                    }
-                }
-
-                Err(PackError::InvalidMessage(
-                    "no session could decrypt this standard message".into(),
-                ))
-            }
-            CiphertextMessage::PreKey(pre_key_message) => {
+        // Standard decrypt failed — try PreKey processing
+        match PreKeyPackMessage::deserialize(message_bytes) {
+            Ok(pre_key_message) => {
                 let x3dh_result = x3dh::x3dh_respond(
                     &self.our_identity,
                     signed_pre_key,
@@ -431,6 +396,12 @@ impl PackSession {
                 self.remote_identity = pre_key_message.identity_key;
 
                 Ok(plaintext)
+            }
+            Err(prekey_err) => {
+                Err(PackError::InvalidMessage(format!(
+                    "decrypt_auto: standard decrypt failed ({}), prekey processing also failed ({})",
+                    standard_err, prekey_err
+                )))
             }
         }
     }
@@ -1568,9 +1539,8 @@ mod tests {
 
         // Bob sends a standard message, Alice decrypts with decrypt_auto
         let reply_ct = bob.encrypt(b"standard msg").unwrap();
-        let tagged = CiphertextMessage::Standard(PackMessage::deserialize(&reply_ct).unwrap()).serialize();
         let alice_spk = SignedPreKey::generate(1, &alice_identity, 1000);
-        let pt = alice.decrypt_auto(&tagged, &alice_spk, None).unwrap();
+        let pt = alice.decrypt_auto(&reply_ct, &alice_spk, None).unwrap();
         assert_eq!(pt, b"standard msg");
     }
 
@@ -1598,10 +1568,6 @@ mod tests {
             b"hello via prekey!",
         ).unwrap();
 
-        // Bob has an empty session and uses decrypt_auto with the tagged prekey message
-        let pre_key_msg = PreKeyPackMessage::deserialize(&first_msg_bytes).unwrap();
-        let tagged = CiphertextMessage::PreKey(pre_key_msg).serialize();
-
         // Create a fresh bob session from a prior exchange so we can test the
         // "existing session receives a new PreKey" path
         let bob_spk2 = SignedPreKey::generate(2, &bob_identity, 1000);
@@ -1628,8 +1594,8 @@ mod tests {
         ).unwrap();
 
         // Now bob has an existing session with alice. Alice initiated a new one
-        // (first_msg_bytes). Bob uses decrypt_auto to handle the PreKey message.
-        let pt = bob.decrypt_auto(&tagged, &bob_spk, Some(&bob_opk)).unwrap();
+        // (first_msg_bytes). Bob uses decrypt_auto with raw wire bytes.
+        let pt = bob.decrypt_auto(&first_msg_bytes, &bob_spk, Some(&bob_opk)).unwrap();
         assert_eq!(pt, b"hello via prekey!");
 
         // Verify the session was updated — bob can now encrypt and alice can decrypt
@@ -1725,9 +1691,6 @@ mod tests {
             "bob", 1, &bob_bundle, b"no opk prekey",
         ).unwrap();
 
-        let pre_key_msg = PreKeyPackMessage::deserialize(&first_msg_bytes).unwrap();
-        let tagged = CiphertextMessage::PreKey(pre_key_msg).serialize();
-
         // Bob with a prior session, receives PreKey without OPK
         let bob_spk2 = SignedPreKey::generate(2, &bob_identity, 1000);
         let bob_bundle2 = PreKeyBundle {
@@ -1749,7 +1712,7 @@ mod tests {
             &bob_spk2, None, &old_msg,
         ).unwrap();
 
-        let pt = bob.decrypt_auto(&tagged, &bob_spk, None).unwrap();
+        let pt = bob.decrypt_auto(&first_msg_bytes, &bob_spk, None).unwrap();
         assert_eq!(pt, b"no opk prekey");
 
         let reply_ct = bob.encrypt(b"reply no opk").unwrap();
@@ -1784,12 +1747,11 @@ mod tests {
             &bob_spk, Some(&bob_opk), &first_msg,
         ).unwrap();
 
-        // Several standard messages via decrypt_auto
+        // Several standard messages via decrypt_auto (raw wire bytes)
         for i in 0..5 {
             let msg = format!("standard {i}");
             let ct = bob.encrypt(msg.as_bytes()).unwrap();
-            let tagged = CiphertextMessage::Standard(PackMessage::deserialize(&ct).unwrap()).serialize();
-            let pt = alice.decrypt_auto(&tagged, &SignedPreKey::generate(1, &alice_identity, 1000), None).unwrap();
+            let pt = alice.decrypt_auto(&ct, &SignedPreKey::generate(1, &alice_identity, 1000), None).unwrap();
             assert_eq!(pt, msg.as_bytes());
         }
 
@@ -1810,9 +1772,7 @@ mod tests {
             "bob", 1, &bob_bundle2, b"rekeyed!",
         ).unwrap();
 
-        let pre_key_msg = PreKeyPackMessage::deserialize(&rekey_msg).unwrap();
-        let tagged = CiphertextMessage::PreKey(pre_key_msg).serialize();
-        let pt = bob.decrypt_auto(&tagged, &bob_spk2, Some(&bob_opk2)).unwrap();
+        let pt = bob.decrypt_auto(&rekey_msg, &bob_spk2, Some(&bob_opk2)).unwrap();
         assert_eq!(pt, b"rekeyed!");
 
         // Continue with standard messages on the new session
@@ -1851,9 +1811,8 @@ mod tests {
             &bob_spk, Some(&bob_opk), &first_msg,
         ).unwrap();
 
-        // Standard type tag but garbage payload
-        let mut corrupted = vec![0x00];
-        corrupted.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00]);
+        // Garbage payload
+        let corrupted = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00];
         let result = bob.decrypt_auto(&corrupted, &bob_spk, None);
         assert!(result.is_err());
     }
@@ -1920,15 +1879,13 @@ mod tests {
 
         // Send a valid message
         let ct = bob.encrypt(b"valid msg").unwrap();
-        let tagged = CiphertextMessage::Standard(PackMessage::deserialize(&ct).unwrap()).serialize();
 
         // Try to decrypt garbage first — should fail but not corrupt session
-        let mut garbage_tagged = vec![0x00];
-        garbage_tagged.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00]);
-        let _ = alice.decrypt_auto(&garbage_tagged, &SignedPreKey::generate(1, &alice_identity, 1000), None);
+        let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00];
+        let _ = alice.decrypt_auto(&garbage, &SignedPreKey::generate(1, &alice_identity, 1000), None);
 
         // Original valid message should still decrypt
-        let pt = alice.decrypt_auto(&tagged, &SignedPreKey::generate(1, &alice_identity, 1000), None).unwrap();
+        let pt = alice.decrypt_auto(&ct, &SignedPreKey::generate(1, &alice_identity, 1000), None).unwrap();
         assert_eq!(pt, b"valid msg");
     }
 }
