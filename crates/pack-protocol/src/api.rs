@@ -882,6 +882,79 @@ impl PackSealedSender {
             group_session,
         ))
     }
+
+    /// Distribute a sender key to a NEW contact (first contact, no existing session).
+    ///
+    /// Creates the 1:1 session via X3DH, encrypts the SKDM as a PreKeyPackMessage,
+    /// and wraps it in sealed sender. Returns the new session and the sealed bytes.
+    pub fn distribute_sender_key_new(
+        our_name: &str,
+        our_device_id: u32,
+        our_identity: &IdentityKeyPair,
+        registration_id: u32,
+        remote_name: &str,
+        remote_device_id: u32,
+        their_bundle: &PreKeyBundle,
+        raw_cert_blob: &[u8],
+        skdm: &SenderKeyDistribution,
+        current_time: u64,
+    ) -> Result<(PackSession, Vec<u8>)> {
+        let (session, pre_key_msg) = PackSession::initiate(
+            our_name, our_device_id, our_identity, registration_id,
+            remote_name, remote_device_id, their_bundle, &skdm.0,
+        )?;
+        let sealed = sealed_sender::sealed_sender_encrypt_raw_cert(
+            our_identity,
+            raw_cert_blob,
+            &their_bundle.identity_key,
+            &pre_key_msg,
+            current_time,
+        )?;
+        Ok((session, sealed))
+    }
+
+    /// Receive a sender key from a NEW contact (first contact, no existing session).
+    ///
+    /// Unseals the sealed sender envelope, creates the 1:1 session via
+    /// `PackSession::respond` (X3DH responder), decrypts the SKDM from the
+    /// PreKeyPackMessage, and creates a receiver group session.
+    pub fn receive_sender_key_new(
+        our_name: &str,
+        our_device_id: u32,
+        our_identity: &IdentityKeyPair,
+        registration_id: u32,
+        remote_name: &str,
+        remote_device_id: u32,
+        signed_pre_key: &SignedPreKey,
+        one_time_pre_key: Option<&OneTimePreKey>,
+        ciphertext: &[u8],
+        trust_root: &PublicKey,
+        current_time: u64,
+        distribution_id: &str,
+    ) -> Result<(PackSession, SealedSenderResult, PackGroupSession)> {
+        let unsealed = sealed_sender::sealed_sender_decrypt_raw_cert(
+            our_identity,
+            ciphertext,
+            trust_root,
+            current_time,
+        )?;
+        let (session, skdm_bytes) = PackSession::respond(
+            our_name, our_device_id, our_identity, registration_id,
+            remote_name, remote_device_id,
+            signed_pre_key, one_time_pre_key,
+            &unsealed.plaintext,
+        )?;
+        let group_session = PackGroupSession::create_receiver(distribution_id, &skdm_bytes)?;
+        Ok((
+            session,
+            SealedSenderResult {
+                sender_uuid: unsealed.sender_uuid,
+                sender_device_id: unsealed.sender_device_id,
+                plaintext: skdm_bytes,
+            },
+            group_session,
+        ))
+    }
 }
 
 // ── PackFingerprint ──
