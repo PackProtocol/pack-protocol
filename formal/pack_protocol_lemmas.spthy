@@ -405,7 +405,7 @@ lemma PQXDH_Key_Agreement:
  *   - DH3 = DH(EK_A, SPK_B) -- EK_A private deleted, cannot recompute
  * Without DH2 and DH3, SK cannot be derived.
  *
- * Note: This is "weak" forward secrecy per Signal's design -- it holds
+ * Note: This is "weak" forward secrecy per the X3DH design -- it holds
  * even without OPK because the ephemeral provides it. With OPK, we get
  * stronger guarantees (DH4 also requires EK_A).
  */

@@ -212,41 +212,6 @@ impl PreKeyPackMessage {
     }
 }
 
-/// Enum wrapping the different ciphertext message types.
-#[derive(Clone)]
-pub enum CiphertextMessage {
-    Standard(PackMessage),
-    PreKey(PreKeyPackMessage),
-}
-
-impl CiphertextMessage {
-    pub fn serialize(&self) -> Vec<u8> {
-        match self {
-            CiphertextMessage::Standard(m) => {
-                let mut out = vec![0x00]; // type tag
-                out.extend_from_slice(&m.serialize());
-                out
-            }
-            CiphertextMessage::PreKey(m) => {
-                let mut out = vec![0x01]; // type tag
-                out.extend_from_slice(&m.serialize());
-                out
-            }
-        }
-    }
-
-    pub fn deserialize(data: &[u8]) -> Result<Self> {
-        if data.is_empty() {
-            return Err(PackError::InvalidMessage("empty ciphertext message".into()));
-        }
-        match data[0] {
-            0x00 => Ok(CiphertextMessage::Standard(PackMessage::deserialize(&data[1..])?)),
-            0x01 => Ok(CiphertextMessage::PreKey(PreKeyPackMessage::deserialize(&data[1..])?)),
-            t => Err(PackError::InvalidMessage(format!("unknown message type: {t}"))),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,48 +275,4 @@ mod tests {
         assert_eq!(deserialized.pre_key_id, None);
     }
 
-    #[test]
-    fn test_ciphertext_message_standard_roundtrip() {
-        let kp = KeyPair::generate();
-        let header = MessageHeader {
-            ratchet_key: kp.public,
-            prev_chain_length: 0,
-            message_number: 0,
-        };
-        let inner = PackMessage::new(header, vec![1, 2, 3]);
-        let msg = CiphertextMessage::Standard(inner);
-
-        let data = msg.serialize();
-        let decoded = CiphertextMessage::deserialize(&data).unwrap();
-        match decoded {
-            CiphertextMessage::Standard(s) => assert_eq!(s.ciphertext, vec![1, 2, 3]),
-            _ => panic!("wrong type"),
-        }
-    }
-
-    #[test]
-    fn test_ciphertext_message_prekey_roundtrip() {
-        let kp = KeyPair::generate();
-        let identity = IdentityKeyPair::generate();
-        let header = MessageHeader {
-            ratchet_key: kp.public.clone(),
-            prev_chain_length: 0,
-            message_number: 0,
-        };
-        let inner = PackMessage::new(header, vec![4, 5, 6]);
-        let msg = CiphertextMessage::PreKey(
-            PreKeyPackMessage::new(7, Some(8), kp.public, identity.public, inner)
-        );
-
-        let data = msg.serialize();
-        let decoded = CiphertextMessage::deserialize(&data).unwrap();
-        match decoded {
-            CiphertextMessage::PreKey(p) => {
-                assert_eq!(p.signed_pre_key_id, 7);
-                assert_eq!(p.pre_key_id, Some(8));
-                assert_eq!(p.message.ciphertext, vec![4, 5, 6]);
-            },
-            _ => panic!("wrong type"),
-        }
-    }
 }

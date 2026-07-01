@@ -1,5 +1,5 @@
 // Implements: Sesame multi-device session management
-// Source: https://signal.org/docs/specifications/sesame/
+// Source: SESAME session management specification
 //
 // Sesame manages sessions across multiple devices belonging to a single user.
 // When sending to a user, we encrypt separately for each of their known devices.

@@ -195,6 +195,10 @@ extension PackSessionBridgeRefMut {
     public func decrypt(_ message_bytes: UnsafeBufferPointer<UInt8>) throws -> RustVec<UInt8> {
         try { let val = __swift_bridge__$PackSessionBridge$decrypt(ptr, message_bytes.toFfiSlice()); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
     }
+
+    public func decrypt_auto(_ message_bytes: UnsafeBufferPointer<UInt8>, _ spk_id: UInt32, _ spk_public: UnsafeBufferPointer<UInt8>, _ spk_private: UnsafeBufferPointer<UInt8>, _ spk_signature: UnsafeBufferPointer<UInt8>, _ spk_timestamp: UInt64, _ opk_id: Optional<UInt32>, _ opk_public: Optional<RustVec<UInt8>>, _ opk_private: Optional<RustVec<UInt8>>) throws -> RustVec<UInt8> {
+        try { let val = __swift_bridge__$PackSessionBridge$decrypt_auto(ptr, message_bytes.toFfiSlice(), spk_id, spk_public.toFfiSlice(), spk_private.toFfiSlice(), spk_signature.toFfiSlice(), spk_timestamp, opk_id.intoFfiRepr(), { if let val = opk_public { val.isOwned = false; return val.ptr } else { return nil } }(), { if let val = opk_private { val.isOwned = false; return val.ptr } else { return nil } }()); switch val.tag { case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultOk: return RustVec(ptr: val.payload.ok) case __swift_bridge__$ResultVec_U8AndPackBridgeError$ResultErr: throw val.payload.err.intoSwiftRepr() default: fatalError() } }()
+    }
 }
 public class PackSessionBridgeRef {
     var ptr: UnsafeMutableRawPointer

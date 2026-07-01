@@ -5,7 +5,7 @@
 This document outlines a game-based computational security proof for pack-protocol.
 It reduces the protocol's security to standard cryptographic hardness assumptions,
 following the framework of Bellare-Rogaway (1993), Canetti-Krawczyk (2001), and
-the Signal-specific analysis of Cohn-Gordon et al. (2020).
+the protocol-specific analysis of Cohn-Gordon et al. (2020).
 
 This is a proof *outline* suitable for a cryptographer to review, verify, and
 formalize. Each theorem states the security claim, the reduction, and the
@@ -77,7 +77,7 @@ This holds for both classical and quantum adversaries (post-quantum security).
 ## 2. Security Model: Multi-Stage Authenticated Key Exchange
 
 We use the multi-stage AKE model of Fischlin and Günther (2014), extended for
-the Signal setting by Cohn-Gordon et al. (2020).
+the E2EE messaging setting by Cohn-Gordon et al. (2020).
 
 ### 2.1 Participants and Sessions
 

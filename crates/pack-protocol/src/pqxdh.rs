@@ -1,5 +1,5 @@
 // Implements: PQXDH key agreement protocol
-// Source: signal.org/docs/specifications/pqxdh/
+// Source: PQXDH key agreement specification
 // Extends X3DH with an ML-KEM-768 (FIPS 203) key encapsulation, producing a
 // hybrid shared secret that is secure if either X25519 or ML-KEM remains unbroken.
 

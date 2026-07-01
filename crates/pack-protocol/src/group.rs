@@ -171,21 +171,6 @@ impl SenderKeyRecord {
         let mut out = Vec::new();
         out.extend_from_slice(&(self.states.len() as u32).to_be_bytes());
         for state in &self.states {
-/*
-            out.extend_from_slice(&state.chain_id.to_be_bytes());
-            out.extend_from_slice(&state.iteration.to_be_bytes());
-            out.extend_from_slice(state.chain_key.as_bytes());
-            out.extend_from_slice(state.signing_key.as_bytes());
-            match &state.signing_private {
-                Some(pk) => { out.push(1); out.extend_from_slice(pk.as_bytes()); }
-                None => { out.push(0); }
-            }
-            out.extend_from_slice(&(state.skipped_keys.len() as u32).to_be_bytes());
-            for (&iter, mk) in &state.skipped_keys {
-                out.extend_from_slice(&iter.to_be_bytes());
-                out.extend_from_slice(mk.as_bytes());
-            }
-*/
             let sb = state.to_bytes();
             out.extend_from_slice(&(sb.len() as u32).to_be_bytes());
             out.extend_from_slice(&sb);

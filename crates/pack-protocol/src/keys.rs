@@ -1,5 +1,5 @@
 // Implements: Key types defined by X3DH specification Sections 2.1-2.4
-// and PQXDH post-quantum key types (signal.org/docs/specifications/pqxdh/)
+// and PQXDH post-quantum key types (PQXDH key agreement specification)
 // ML-KEM per FIPS 203
 
 use crate::crypto::curve::{self, KeyPair, PublicKey, PrivateKey};
@@ -8,6 +8,7 @@ use crate::errors::Result;
 /// Long-term identity key pair (X3DH §2.1).
 /// Used for both X25519 DH and XEdDSA signing.
 /// The private key never leaves the device.
+#[derive(Clone)]
 pub struct IdentityKeyPair {
     pub public: IdentityKey,
     private: PrivateKey,

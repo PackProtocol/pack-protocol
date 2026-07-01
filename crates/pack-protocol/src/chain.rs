@@ -1,5 +1,5 @@
 // Implements: Symmetric chain key derivation functions KDF_RK and KDF_CK
-// Source: https://signal.org/docs/specifications/doubleratchet/ Sections 2.2-2.3
+// Source: Double Ratchet Algorithm specification, Sections 2.2-2.3
 
 use zeroize::{Zeroize, ZeroizeOnDrop};
 

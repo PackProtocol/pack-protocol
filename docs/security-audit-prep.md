@@ -2,17 +2,17 @@
 
 ## Project Overview
 
-Clean-room implementation of the Pack Protocol in Rust, built from public specifications only (not derived from libsignal source code). The core crate uses `#![forbid(unsafe_code)]`.
+Clean-room implementation of the Pack Protocol in Rust, built from public cryptographic specifications only. The core crate uses `#![forbid(unsafe_code)]`.
 
 ## Specification Sources
 
 | Component | Specification |
 |-----------|--------------|
-| X3DH | https://signal.org/docs/specifications/x3dh/ |
-| Double Ratchet | https://signal.org/docs/specifications/doubleratchet/ |
-| Sealed Sender | https://signal.org/blog/sealed-sender/ |
-| Sender Keys | https://signal.org/docs/specifications/group-v2/ |
-| XEdDSA | https://signal.org/docs/specifications/xeddsa/ |
+| X3DH | X3DH key agreement specification |
+| Double Ratchet | Double Ratchet Algorithm specification |
+| Sealed Sender | Noise Protocol Framework (NK pattern) |
+| Sender Keys | Sender Keys group messaging specification |
+| XEdDSA | XEdDSA signature specification |
 
 ## Crate Structure
 

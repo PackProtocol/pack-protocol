@@ -17,7 +17,7 @@ pub struct InMemoryStore {
     pre_keys: HashMap<u32, OneTimePreKey>,
     signed_pre_keys: HashMap<u32, SignedPreKey>,
     sessions: HashMap<String, Vec<u8>>,
-    sender_keys: HashMap<String, SenderKeyRecord>,
+    sender_keys: HashMap<String, Vec<u8>>,
 }
 
 impl InMemoryStore {
@@ -36,10 +36,6 @@ impl InMemoryStore {
 
 fn addr_key(address: &ProtocolAddress) -> String {
     format!("{}:{}", address.name, address.device_id)
-}
-
-fn _sender_key_id(sender: &ProtocolAddress, dist_id: &str) -> String {
-    format!("{}:{}:{}", sender.name, sender.device_id, dist_id)
 }
 
 #[async_trait]
@@ -164,12 +160,18 @@ impl SessionStore for InMemoryStore {
 
 #[async_trait]
 impl SenderKeyStore for InMemoryStore {
-    async fn store_sender_key(&mut self, _sender: &ProtocolAddress, _distribution_id: &str, _record: &SenderKeyRecord) -> Result<()> {
+    async fn store_sender_key(&mut self, sender: &ProtocolAddress, distribution_id: &str, record: &SenderKeyRecord) -> Result<()> {
+        let key = format!("{}:{}:{}", sender.name, sender.device_id, distribution_id);
+        self.sender_keys.insert(key, record.to_bytes());
         Ok(())
     }
 
-    async fn load_sender_key(&self, _sender: &ProtocolAddress, _distribution_id: &str) -> Result<Option<SenderKeyRecord>> {
-        Ok(None)
+    async fn load_sender_key(&self, sender: &ProtocolAddress, distribution_id: &str) -> Result<Option<SenderKeyRecord>> {
+        let key = format!("{}:{}:{}", sender.name, sender.device_id, distribution_id);
+        match self.sender_keys.get(&key) {
+            Some(data) => Ok(Some(SenderKeyRecord::from_bytes(data)?)),
+            None => Ok(None),
+        }
     }
 }
 

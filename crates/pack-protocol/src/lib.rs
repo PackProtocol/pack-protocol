@@ -2,7 +2,6 @@
 
 pub mod crypto;
 pub mod keys;
-pub mod identity;
 pub mod x3dh;
 pub mod pqxdh;
 pub mod ratchet;

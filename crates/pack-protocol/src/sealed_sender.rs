@@ -931,8 +931,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_protobuf_sender_cert_signal_format() {
-        // Signal's original field numbering: field 2=device, 3=expires, 4=identity, 5=signer, 6=uuid
+    fn test_parse_protobuf_sender_cert_legacy_format() {
+        // Legacy field numbering: field 2=device, 3=expires, 4=identity, 5=signer, 6=uuid
         let identity = IdentityKeyPair::generate();
         let ik_bytes = identity.public.as_bytes();
 
@@ -972,7 +972,7 @@ mod tests {
         outer.push(64);
         outer.extend_from_slice(&sig);
 
-        let cert = parse_protobuf_sender_cert(&outer).expect("should parse Signal-format cert");
+        let cert = parse_protobuf_sender_cert(&outer).expect("should parse legacy-format cert");
         assert_eq!(cert.sender_uuid, uuid);
         assert_eq!(cert.sender_device_id, 66);
         assert_eq!(cert.expiration, expires);

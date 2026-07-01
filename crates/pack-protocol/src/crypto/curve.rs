@@ -1,4 +1,4 @@
-// Implements: X25519 Diffie-Hellman (RFC 7748 Section 5) and XEdDSA (signal.org/docs/specifications/xeddsa Section 2)
+// Implements: X25519 Diffie-Hellman (RFC 7748 Section 5) and XEdDSA (XEdDSA specification, Section 2)
 // X25519 provides DH key agreement. XEdDSA allows an X25519 key to produce Ed25519-compatible signatures.
 
 use rand::rngs::OsRng;

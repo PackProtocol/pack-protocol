@@ -2,7 +2,7 @@
                                                                                                                         
   Architecture Summary                                                                                                  
                                                                                                                         
-  Rust implementation of the Signal protocol stack: X25519/XEdDSA, AES-256-GCM, HKDF-SHA256, X3DH, PQXDH (ML-KEM-768),  
+  Rust implementation of E2EE messaging protocols: X25519/XEdDSA, AES-256-GCM, HKDF-SHA256, X3DH, PQXDH (ML-KEM-768),  
   Double Ratchet, Sender Keys, Sealed Sender (Noise NK), Safety Numbers. FFI bindings for C/Swift/Kotlin/JNI. ~3,200    
   lines of core crypto, ~600 lines FFI.                                                                                 
                   
@@ -58,7 +58,7 @@
   At 68 bytes per entry (32 key bytes + 32 ratchet key + 4 message number), 100 ratchet advances × 1000 skips = ~6.8 MB.
    On a mobile device with many sessions, this becomes a DoS vector.                                                    
                                                                                                                         
-  Fix: Add a global cap (e.g., 5000 total skipped keys) with LRU eviction. Signal's implementation uses this approach.  
+  Fix: Add a global cap (e.g., 5000 total skipped keys) with LRU eviction. This is standard practice in E2EE implementations.  
                   
   H3: FFI layer bypasses public key validation                                                                          
                   
@@ -193,22 +193,22 @@
   ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤    
   │ X25519 DH     │ RFC 7748              │ Correct — delegates to x25519-dalek                                    │ 
   ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤    
-  │ XEdDSA        │ Signal spec §2        │ Correct — hedged nonces, sign-bit normalization, Montgomery↔Edwards    │ 
+  │ XEdDSA        │ XEdDSA spec §2        │ Correct — hedged nonces, sign-bit normalization, Montgomery↔Edwards    │ 
   │               │                       │ conversion                                                             │    
   ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤ 
-  │ X3DH          │ Signal spec §3.3-3.4  │ Correct — DH ordering (DH1..DH4), F prefix, HKDF params, AD format     │    
+  │ X3DH          │ X3DH spec §3.3-3.4    │ Correct — DH ordering (DH1..DH4), F prefix, HKDF params, AD format     │    
   ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤ 
-  │ PQXDH         │ Signal PQXDH spec     │ Correct — extends X3DH with ML-KEM-768, implicit rejection handled     │    
+  │ PQXDH         │ PQXDH spec            │ Correct — extends X3DH with ML-KEM-768, implicit rejection handled     │    
   ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤ 
-  │ Double        │ Signal spec §3.1-3.5  │ Correct — KDF_RK and KDF_CK match spec constants, DH ratchet step      │    
+  │ Double        │ DR spec §3.1-3.5      │ Correct — KDF_RK and KDF_CK match spec constants, DH ratchet step      │    
   │ Ratchet       │                       │ ordering                                                               │ 
   ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤    
-  │ Sender Keys   │ Signal spec           │ Correct — chain ratchet, XEdDSA signatures, out-of-order support       │ 
+  │ Sender Keys   │ Sender Keys spec      │ Correct — chain ratchet, XEdDSA signatures, out-of-order support       │ 
   ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤    
   │ Noise NK      │ noiseprotocol.org     │ Correct — handshake hash chain, MixHash/MixKey, identity binding       │    
   │               │ §7.4                  │                                                                        │
   ├───────────────┼───────────────────────┼────────────────────────────────────────────────────────────────────────┤    
-  │ Safety        │ Signal spec           │ Correct — 5200 iterations SHA-512, symmetric display, scannable verify │
+  │ Safety        │ Safety Numbers spec   │ Correct — 5200 iterations SHA-512, symmetric display, scannable verify │
   │ Numbers       │                       │                                                                        │    
   └───────────────┴───────────────────────┴────────────────────────────────────────────────────────────────────────┘
                                                                                                                         

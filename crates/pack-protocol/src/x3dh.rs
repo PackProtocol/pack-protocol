@@ -1,5 +1,5 @@
 // Implements: X3DH key agreement protocol, Sections 3.3 and 3.4
-// Source: https://signal.org/docs/specifications/x3dh/
+// Source: X3DH key agreement specification
 
 use zeroize::Zeroizing;
 

@@ -779,7 +779,7 @@ unsafe fn build_signed_pre_key<'local>(
     Some(SignedPreKey {
         id,
         key_pair: pack_protocol::crypto::curve::KeyPair {
-            public: PublicKey::from_bytes(pub_arr),
+            public: PublicKey::from_bytes_validated(pub_arr).ok()?,
             private: PrivateKey::from_bytes(priv_arr),
         },
         signature: sig_arr,
@@ -806,7 +806,7 @@ unsafe fn build_one_time_pre_key<'local>(
     Some(OneTimePreKey {
         id,
         key_pair: pack_protocol::crypto::curve::KeyPair {
-            public: PublicKey::from_bytes(pub_arr),
+            public: PublicKey::from_bytes_validated(pub_arr).ok()?,
             private: PrivateKey::from_bytes(priv_arr),
         },
     })

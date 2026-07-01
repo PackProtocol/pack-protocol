@@ -1,7 +1,7 @@
 /*
  * Tamarin Prover Model: pack-protocol (v5)
  *
- * Formal verification of a clean-room Signal protocol implementation.
+ * Formal verification of the Pack Protocol E2EE implementation.
  * Models all cryptographic protocol layers in the symbolic (Dolev-Yao) model:
  *
  *   Layer 1: X3DH / PQXDH key agreement

@@ -1,5 +1,5 @@
 // Implements: Double Ratchet Algorithm, Sections 3.1-3.5
-// Source: https://signal.org/docs/specifications/doubleratchet/
+// Source: Double Ratchet Algorithm specification
 
 use std::collections::BTreeMap;
 

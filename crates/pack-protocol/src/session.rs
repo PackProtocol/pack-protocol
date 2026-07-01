@@ -265,7 +265,8 @@ where
     record.archive_current_and_set(session_state);
 
     // Decrypt the inner message
-    let current = record.current.as_mut().unwrap();
+    let current = record.current.as_mut()
+        .ok_or(PackError::SessionNotFound)?;
     let plaintext = ratchet::ratchet_decrypt(
         &mut current.ratchet,
         &message.message.header,
@@ -440,7 +441,7 @@ pub fn resolve_simultaneous_initiation(
 }
 
 /// Build AD = IK_Alice || IK_Bob (always initiator first, matching X3DH).
-fn build_associated_data(state: &SessionState) -> Vec<u8> {
+pub(crate) fn build_associated_data(state: &SessionState) -> Vec<u8> {
     let mut ad = Vec::with_capacity(64);
     if state.is_initiator {
         ad.extend_from_slice(state.local_identity.as_bytes());

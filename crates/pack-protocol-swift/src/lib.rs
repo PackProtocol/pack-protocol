@@ -76,6 +76,19 @@ mod ffi {
 
         fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, PackBridgeError>;
         fn decrypt(&mut self, message_bytes: &[u8]) -> Result<Vec<u8>, PackBridgeError>;
+
+        fn decrypt_auto(
+            &mut self,
+            message_bytes: &[u8],
+            spk_id: u32,
+            spk_public: &[u8],
+            spk_private: &[u8],
+            spk_signature: &[u8],
+            spk_timestamp: u64,
+            opk_id: Option<u32>,
+            opk_public: Option<Vec<u8>>,
+            opk_private: Option<Vec<u8>>,
+        ) -> Result<Vec<u8>, PackBridgeError>;
         fn pre_key_message(&self) -> Option<Vec<u8>>;
         fn first_plaintext(&self) -> Option<Vec<u8>>;
         fn remote_identity_key(&self) -> Vec<u8>;
@@ -405,6 +418,28 @@ impl PackSessionBridge {
         map_err(self.inner.decrypt(message_bytes))
     }
 
+    fn decrypt_auto(
+        &mut self,
+        message_bytes: &[u8],
+        spk_id: u32,
+        spk_public: &[u8],
+        spk_private: &[u8],
+        spk_signature: &[u8],
+        spk_timestamp: u64,
+        opk_id: Option<u32>,
+        opk_public: Option<Vec<u8>>,
+        opk_private: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, ffi::PackBridgeError> {
+        let spk = build_signed_pre_key(spk_id, spk_public, spk_private, spk_signature, spk_timestamp)?;
+        let opk = match (opk_id, opk_public, opk_private) {
+            (Some(id), Some(pub_bytes), Some(priv_bytes)) => {
+                Some(build_one_time_pre_key(id, &pub_bytes, &priv_bytes)?)
+            }
+            _ => None,
+        };
+        map_err(self.inner.decrypt_auto(message_bytes, &spk, opk.as_ref()))
+    }
+
     fn pre_key_message(&self) -> Option<Vec<u8>> {
         self.pre_key_message.clone()
     }
@@ -534,11 +569,11 @@ impl PackSealedSenderBridge {
         current_time: u64,
     ) -> Result<ffi::SealedSenderDecryptResult, ffi::PackBridgeError> {
         let our_identity = build_identity_pair(our_identity_public, our_identity_private)?;
-        let trust_root_key = PublicKey::from_bytes(
+        let trust_root_key = PublicKey::from_bytes_validated(
             trust_root
                 .try_into()
                 .map_err(|_| ffi::PackBridgeError::InvalidKey("trust root must be 32 bytes".into()))?,
-        );
+        ).map_err(|e| ffi::PackBridgeError::InvalidKey(format!("invalid trust root key: {e}")))?;
 
         let result = map_err(api::PackSealedSender::decrypt(
             &our_identity, ciphertext, &trust_root_key, current_time,
@@ -574,11 +609,11 @@ impl PackSealedSenderBridge {
         current_time: u64,
         distribution_id: &str,
     ) -> Result<PackGroupSessionBridge, ffi::PackBridgeError> {
-        let trust_root_key = PublicKey::from_bytes(
+        let trust_root_key = PublicKey::from_bytes_validated(
             trust_root
                 .try_into()
                 .map_err(|_| ffi::PackBridgeError::InvalidKey("trust root must be 32 bytes".into()))?,
-        );
+        ).map_err(|e| ffi::PackBridgeError::InvalidKey(format!("invalid trust root key: {e}")))?;
 
         let (_result, group_session) = map_err(api::PackSealedSender::receive_sender_key(
             &mut session.inner,
@@ -634,17 +669,17 @@ impl PackSealedSenderBridge {
         current_time: u64,
     ) -> Result<ffi::SealedSenderDecryptResult, ffi::PackBridgeError> {
         let our_identity = build_identity_pair(our_identity_public, our_identity_private)?;
-        let trust_root_key = PublicKey::from_bytes(
+        let trust_root_key = PublicKey::from_bytes_validated(
             trust_root
                 .try_into()
                 .map_err(|_| ffi::PackBridgeError::InvalidKey("trust root must be 32 bytes".into()))?,
-        );
+        ).map_err(|e| ffi::PackBridgeError::InvalidKey(format!("invalid trust root key: {e}")))?;
 
         let envelope = map_err(api::PackSealedSender::decrypt_message(
             &our_identity, ciphertext, &trust_root_key, current_time,
         ))?;
 
-        let inner = envelope.inner_ciphertext();
+        let inner = envelope.inner_ciphertext().to_vec();
         Ok(ffi::SealedSenderDecryptResult {
             sender_uuid: envelope.sender_uuid,
             sender_device_id: envelope.sender_device_id,
@@ -762,14 +797,16 @@ fn build_pre_key_bundle(
 
     let identity = IdentityKey::from_bytes(ik_arr)
         .map_err(|e| ffi::PackBridgeError::InvalidKey(e.to_string()))?;
-    let signed_pre_key = PublicKey::from_bytes(spk_arr);
+    let signed_pre_key = PublicKey::from_bytes_validated(spk_arr)
+        .map_err(|e| ffi::PackBridgeError::InvalidKey(format!("invalid signed pre key: {e}")))?;
 
     let (one_time_pre_key_id, one_time_pre_key) = match (opk_id, opk) {
         (Some(id), Some(bytes)) => {
             let arr: [u8; 32] = bytes
                 .try_into()
                 .map_err(|_| ffi::PackBridgeError::InvalidKey("one-time pre key must be 32 bytes".into()))?;
-            (Some(id), Some(PublicKey::from_bytes(arr)))
+            (Some(id), Some(PublicKey::from_bytes_validated(arr)
+                .map_err(|e| ffi::PackBridgeError::InvalidKey(format!("invalid one-time pre key: {e}")))?))
         }
         _ => (None, None),
     };
@@ -804,7 +841,8 @@ fn build_signed_pre_key(
     Ok(SignedPreKey {
         id,
         key_pair: KeyPair {
-            public: PublicKey::from_bytes(pub_arr),
+            public: PublicKey::from_bytes_validated(pub_arr)
+                .map_err(|e| ffi::PackBridgeError::InvalidKey(format!("invalid signed pre key public: {e}")))?,
             private: PrivateKey::from_bytes(priv_arr),
         },
         signature: signature
@@ -829,7 +867,8 @@ fn build_one_time_pre_key(
     Ok(OneTimePreKey {
         id,
         key_pair: KeyPair {
-            public: PublicKey::from_bytes(pub_arr),
+            public: PublicKey::from_bytes_validated(pub_arr)
+                .map_err(|e| ffi::PackBridgeError::InvalidKey(format!("invalid one-time pre key public: {e}")))?,
             private: PrivateKey::from_bytes(priv_arr),
         },
     })
@@ -900,5 +939,184 @@ impl PackKeyGeneratorBridge {
         let pk = PrivateKey::from_bytes(priv_arr);
         let sig = pack_protocol::crypto::curve::xeddsa_sign(&pk, message);
         Ok(sig.to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup_pair() -> (
+        IdentityKeyPair, SignedPreKey, OneTimePreKey,
+        IdentityKeyPair, SignedPreKey, OneTimePreKey,
+    ) {
+        let alice_id = IdentityKeyPair::generate();
+        let alice_spk = SignedPreKey::generate(1, &alice_id, 1000);
+        let alice_opk = OneTimePreKey::generate(1);
+        let bob_id = IdentityKeyPair::generate();
+        let bob_spk = SignedPreKey::generate(1, &bob_id, 1000);
+        let bob_opk = OneTimePreKey::generate(1);
+        (alice_id, alice_spk, alice_opk, bob_id, bob_spk, bob_opk)
+    }
+
+    fn to_bridge(session: api::PackSession) -> PackSessionBridge {
+        PackSessionBridge { inner: session, pre_key_message: None, first_plaintext: None }
+    }
+
+    #[test]
+    fn test_decrypt_auto_standard_message() {
+        let (alice_id, alice_spk, _alice_opk, bob_id, bob_spk, bob_opk) = setup_pair();
+
+        let bundle = PreKeyBundle {
+            identity_key: bob_id.public.clone(),
+            signed_pre_key_id: bob_spk.id,
+            signed_pre_key: bob_spk.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
+            one_time_pre_key_id: Some(bob_opk.id),
+            one_time_pre_key: Some(bob_opk.key_pair.public.clone()),
+        };
+
+        let (mut alice_session, pre_key_msg) = api::PackSession::initiate(
+            "alice", 1, &alice_id, 1, "bob", 1, &bundle, b"hello bob",
+        ).unwrap();
+
+        let (mut bob_session, _pt) = api::PackSession::respond(
+            "bob", 1, &bob_id, 1, "alice", 1, &bob_spk, Some(&bob_opk), &pre_key_msg,
+        ).unwrap();
+
+        let reply_ct = bob_session.encrypt(b"hello alice").unwrap();
+
+        let pt = alice_session.decrypt_auto(&reply_ct, &alice_spk, None).unwrap();
+        assert_eq!(pt, b"hello alice");
+    }
+
+    #[test]
+    fn test_decrypt_auto_prekey_message() {
+        let (alice_id, alice_spk, _alice_opk, bob_id, bob_spk, bob_opk) = setup_pair();
+
+        let bundle = PreKeyBundle {
+            identity_key: bob_id.public.clone(),
+            signed_pre_key_id: bob_spk.id,
+            signed_pre_key: bob_spk.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
+            one_time_pre_key_id: Some(bob_opk.id),
+            one_time_pre_key: Some(bob_opk.key_pair.public.clone()),
+        };
+
+        let (_alice_session, pre_key_msg) = api::PackSession::initiate(
+            "alice", 1, &alice_id, 1, "bob", 1, &bundle, b"hello bob",
+        ).unwrap();
+
+        let dummy_bundle = PreKeyBundle {
+            identity_key: alice_id.public.clone(),
+            signed_pre_key_id: alice_spk.id,
+            signed_pre_key: alice_spk.key_pair.public.clone(),
+            signed_pre_key_signature: alice_spk.signature,
+            signed_pre_key_timestamp: alice_spk.timestamp,
+            one_time_pre_key_id: None,
+            one_time_pre_key: None,
+        };
+        let (bob_session, _) = api::PackSession::initiate(
+            "bob", 1, &bob_id, 1, "alice", 1, &dummy_bundle, b"dummy",
+        ).unwrap();
+        let mut bob_bridge = to_bridge(
+            api::PackSession::from_bytes(&bob_session.to_bytes()).unwrap()
+        );
+
+        let pt = match bob_bridge.decrypt_auto(
+            &pre_key_msg,
+            bob_spk.id,
+            bob_spk.key_pair.public.as_bytes(),
+            bob_spk.key_pair.private.as_bytes(),
+            &bob_spk.signature,
+            bob_spk.timestamp,
+            Some(bob_opk.id),
+            Some(bob_opk.key_pair.public.as_bytes().to_vec()),
+            Some(bob_opk.key_pair.private.as_bytes().to_vec()),
+        ) {
+            Ok(pt) => pt,
+            Err(_) => panic!("decrypt_auto failed on prekey message"),
+        };
+
+        assert_eq!(pt, b"hello bob");
+    }
+
+    #[test]
+    fn test_decrypt_auto_bridge_standard_message() {
+        let (alice_id, alice_spk, _alice_opk, bob_id, bob_spk, bob_opk) = setup_pair();
+
+        let bundle = PreKeyBundle {
+            identity_key: bob_id.public.clone(),
+            signed_pre_key_id: bob_spk.id,
+            signed_pre_key: bob_spk.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
+            one_time_pre_key_id: Some(bob_opk.id),
+            one_time_pre_key: Some(bob_opk.key_pair.public.clone()),
+        };
+
+        let (alice_session, pre_key_msg) = api::PackSession::initiate(
+            "alice", 1, &alice_id, 1, "bob", 1, &bundle, b"hello bob",
+        ).unwrap();
+
+        let (mut bob_session, _pt) = api::PackSession::respond(
+            "bob", 1, &bob_id, 1, "alice", 1, &bob_spk, Some(&bob_opk), &pre_key_msg,
+        ).unwrap();
+
+        let reply_ct = bob_session.encrypt(b"bridge test").unwrap();
+
+        let mut alice_bridge = to_bridge(
+            api::PackSession::from_bytes(&alice_session.to_bytes()).unwrap()
+        );
+
+        let pt = match alice_bridge.decrypt_auto(
+            &reply_ct,
+            alice_spk.id,
+            alice_spk.key_pair.public.as_bytes(),
+            alice_spk.key_pair.private.as_bytes(),
+            &alice_spk.signature,
+            alice_spk.timestamp,
+            None, None, None,
+        ) {
+            Ok(pt) => pt,
+            Err(_) => panic!("decrypt_auto failed on standard message"),
+        };
+
+        assert_eq!(pt, b"bridge test");
+    }
+
+    #[test]
+    fn test_decrypt_auto_rejects_garbage() {
+        let (alice_id, alice_spk, _alice_opk, bob_id, bob_spk, _bob_opk) = setup_pair();
+
+        let bundle = PreKeyBundle {
+            identity_key: bob_id.public.clone(),
+            signed_pre_key_id: bob_spk.id,
+            signed_pre_key: bob_spk.key_pair.public.clone(),
+            signed_pre_key_signature: bob_spk.signature,
+            signed_pre_key_timestamp: bob_spk.timestamp,
+            one_time_pre_key_id: None,
+            one_time_pre_key: None,
+        };
+
+        let (session, _) = api::PackSession::initiate(
+            "alice", 1, &alice_id, 1, "bob", 1, &bundle, b"hello",
+        ).unwrap();
+
+        let mut bridge = to_bridge(session);
+
+        let result = bridge.decrypt_auto(
+            b"not a valid message",
+            alice_spk.id,
+            alice_spk.key_pair.public.as_bytes(),
+            alice_spk.key_pair.private.as_bytes(),
+            &alice_spk.signature,
+            alice_spk.timestamp,
+            None, None, None,
+        );
+
+        assert!(result.is_err());
     }
 }

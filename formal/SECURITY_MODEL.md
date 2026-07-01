@@ -3,7 +3,7 @@
 ## 1. Overview
 
 This document describes the formal security model for **pack-protocol**, a clean-room
-implementation of the Signal protocol in Rust. The model covers five protocol layers:
+implementation of modern E2EE messaging protocols in Rust. The model covers five protocol layers:
 
 | Layer | Protocol | Specification |
 |-------|----------|---------------|

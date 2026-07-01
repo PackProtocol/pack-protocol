@@ -11,12 +11,6 @@ use crate::session::{SessionRecord, SessionState};
 use crate::store::ProtocolAddress;
 use crate::x3dh;
 
-fn copy_identity(ikp: &IdentityKeyPair) -> IdentityKeyPair {
-    IdentityKeyPair::from_keys(
-        IdentityKey::from_bytes(*ikp.public.as_bytes()).unwrap(),
-        PrivateKey::from_bytes(*ikp.private_key().as_bytes()),
-    )
-}
 
 // ── PackSession ──
 
@@ -80,7 +74,7 @@ impl PackSession {
 
         let session = Self {
             record,
-            our_identity: copy_identity(our_identity),
+            our_identity: our_identity.clone(),
             our_address,
             remote_address,
             remote_identity: their_bundle.identity_key.clone(),
@@ -141,7 +135,7 @@ impl PackSession {
 
         let session = Self {
             record,
-            our_identity: copy_identity(our_identity),
+            our_identity: our_identity.clone(),
             our_address,
             remote_address,
             remote_identity: message.identity_key.clone(),
@@ -201,7 +195,7 @@ impl PackSession {
 
         let session = Self {
             record,
-            our_identity: copy_identity(our_identity),
+            our_identity: our_identity.clone(),
             our_address,
             remote_address,
             remote_identity: their_bundle.identity_key.clone(),
@@ -269,7 +263,7 @@ impl PackSession {
 
         let session = Self {
             record,
-            our_identity: copy_identity(our_identity),
+            our_identity: our_identity.clone(),
             our_address,
             remote_address,
             remote_identity: message.identity_key.clone(),
@@ -527,17 +521,7 @@ impl PackSession {
     }
 }
 
-fn build_associated_data(state: &SessionState) -> Vec<u8> {
-    let mut ad = Vec::with_capacity(64);
-    if state.is_initiator {
-        ad.extend_from_slice(state.local_identity.as_bytes());
-        ad.extend_from_slice(state.remote_identity.as_bytes());
-    } else {
-        ad.extend_from_slice(state.remote_identity.as_bytes());
-        ad.extend_from_slice(state.local_identity.as_bytes());
-    }
-    ad
-}
+use crate::session::build_associated_data;
 
 // ── PackGroupSession ──
 
@@ -716,8 +700,8 @@ impl SealedEnvelope {
         self.sender_device_id
     }
 
-    pub fn inner_ciphertext(&self) -> Vec<u8> {
-        self.inner.clone()
+    pub fn inner_ciphertext(&self) -> &[u8] {
+        &self.inner
     }
 
     pub fn from_inner(inner: Vec<u8>) -> Self {
