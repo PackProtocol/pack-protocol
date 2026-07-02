@@ -1,13 +1,12 @@
 # pack-protocol
 
-A Rust implementation of an end-to-end encrypted messaging protocol. Provides the cryptographic layer for secure 1:1 and group messaging — key agreement, session management, message encryption, sender anonymity, and identity verification.
+A Rust implementation of an end-to-end encrypted messaging protocol based on the published [blogs](https://signal.org/blog/spqr/) of the Signal Protocol. Provides the cryptographic layer for secure 1:1 and group messaging — key agreement, session management, message encryption, sender anonymity, and identity verification.
 
 ## What this is
 
 pack-protocol is a library, not an application. It implements:
 
 - **X3DH** (Extended Triple Diffie-Hellman) — asynchronous key agreement for establishing 1:1 sessions without both parties being online
-- **PQXDH** — post-quantum hybrid variant of X3DH using ML-KEM-768 alongside X25519 (session establishment implemented; full message flow integration in progress)
 - **Double Ratchet** — forward-secure symmetric key ratcheting for 1:1 sessions with out-of-order message handling
 - **Sender Keys** — efficient group encryption where each member maintains a single ratcheting key
 - **Sealed Sender** — encrypts sender identity so the relay server cannot determine who sent a message
@@ -177,6 +176,23 @@ The core library is pure Rust with no platform dependencies. FFI crates produce:
 ## Test coverage
 
 ~250 tests covering protocol correctness, security properties (forward secrecy, replay rejection, identity key validation, MAC verification), cross-language interoperability, and edge cases (out-of-order messages, skipped keys, re-registration, concurrent sessions).
+
+## FAQ
+
+**Why Rust?**
+Memory safety without a garbage collector. Cryptographic libraries are high-value targets for memory corruption exploits — buffer overflows, use-after-free, double-free. Rust eliminates these classes of bugs at compile time. The `ZeroizeOnDrop` trait provides deterministic secret cleanup, and `#![forbid(unsafe_code)]` on the core crate means zero unsafe blocks in the cryptographic logic. The modern Rust cryptography ecosystem (`RustCrypto`, `dalek`) is mature and audited.
+
+**Why not use libsignal directly?**
+This started with an attempt to integrate the Signal library into an iOS app. When that hit roadblocks, it grew into a larger question: how far can this go? Pack Protocol became an experiment: could AI-assisted development produce a working, correct implementation of modern E2EE protocols? The answer turned out to be yes — with human direction, code review, and cross-platform interop testing against independent implementations.
+
+**What about post-quantum?**
+The codebase includes PQXDH (hybrid X25519 + ML-KEM-768) key agreement at the cryptographic layer. It is not yet integrated into the end-to-end message flow. When complete, PQXDH will replace X3DH as the default key agreement — not as an optional mode, but as the only path. Every session will be quantum-resistant transparently.
+
+**Has this been audited?**
+No. The library has not undergone a formal third-party security audit. The test suite covers protocol correctness and security properties, and fuzz targets exercise parsing and decryption paths, but independent review should precede use in production systems.
+
+**How is this different from Signal?**
+This is a clean-room implementation based on the published specifications and blog posts of the Signal Protocol. It is not a fork of libsignal, does not share code with Signal, and is not affiliated with Signal Foundation. The protocol design follows the same cryptographic approach — X3DH, Double Ratchet, Sender Keys, Sealed Sender — but the implementation, API, and licensing are independent.
 
 ## Security
 
