@@ -8,7 +8,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 pack-protocol = { path = "../pack-protocol" }
-swift-bridge = { git = "ssh://git@github.com/finn-devs/swift-bridge.git", branch = "main" }
+swift-bridge = { git = "https://github.com/finn-devs/swift-bridge.git", branch = "main" }
 
 [build-dependencies]
-swift-bridge-build = { git = "ssh://git@github.com/finn-devs/swift-bridge.git", branch = "main" }
+swift-bridge-build = { git = "https://github.com/finn-devs/swift-bridge.git", branch = "main" }
